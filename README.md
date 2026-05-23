@@ -66,6 +66,13 @@ cd frontend
 npm install && npm run dev
 ```
 
+## CI
+
+GitHub Actions 配置位于 `.github/workflows/ci.yml`，在 Pull Request 以及推送到 `main`、`master` 时运行。
+
+- 后端：Go 1.24.x，执行 `go mod download`、`go vet ./...`、`go test -race -count=1 ./...`
+- 前端：Node.js 22，执行 `npm ci`、`npm run build`
+
 ## 接口清单
 
 ### 账号 `/account`
