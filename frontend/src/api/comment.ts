@@ -3,7 +3,7 @@ import { normalizeCommentList } from './normalize'
 import type { Comment, MessageResponse } from './types'
 
 export async function listAll(videoId: number) {
-  const comments = await postJson<Comment[] | null>('/comment/listAll', { video_id: videoId })
+  const comments = await postJson<Comment[] | null>('/comment/listAll', { video_id: videoId }, { authRequired: true })
   return normalizeCommentList(comments)
 }
 

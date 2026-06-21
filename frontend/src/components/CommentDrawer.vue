@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { reactive } from 'vue'
+import { reactive, watch } from 'vue'
+import { RefreshCw, Send, Trash2, X } from '@lucide/vue'
 
-import { ApiError } from '../api/client'
-import * as commentApi from '../api/comment'
-import type { Comment, FeedVideoItem } from '../api/types'
-import { useAuthStore } from '../stores/auth'
-import { useToastStore } from '../stores/toast'
+import { ApiError } from '@/api/client'
+import * as commentApi from '@/api/comment'
+import type { Comment } from '@/api/types'
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
+import { useAuthStore } from '@/stores/auth'
+import { useToastStore } from '@/stores/toast'
 
-const props = defineProps<{ video: FeedVideoItem | null }>()
+const props = defineProps<{ video: { id: number; title: string } | null }>()
 const emit = defineEmits<{ close: [] }>()
-
 const auth = useAuthStore()
 const toast = useToastStore()
 
@@ -19,10 +21,6 @@ const drawer = reactive({
   comments: [] as Comment[],
   content: '',
 })
-
-function needLogin() {
-  toast.error('请先登录')
-}
 
 function close() {
   drawer.comments = []
@@ -37,8 +35,8 @@ async function loadComments() {
   drawer.error = ''
   try {
     drawer.comments = await commentApi.listAll(props.video.id)
-  } catch (e) {
-    drawer.error = e instanceof ApiError ? e.message : String(e)
+  } catch (error) {
+    drawer.error = error instanceof ApiError ? error.message : String(error)
   } finally {
     drawer.loading = false
   }
@@ -46,7 +44,6 @@ async function loadComments() {
 
 async function publishComment() {
   if (!props.video) return
-  if (!auth.isLoggedIn) return needLogin()
   const content = drawer.content.trim()
   if (!content) return
   drawer.loading = true
@@ -56,98 +53,98 @@ async function publishComment() {
     drawer.content = ''
     await loadComments()
     toast.success('评论已发布')
-  } catch (e) {
-    drawer.error = e instanceof ApiError ? e.message : String(e)
+  } catch (error) {
+    drawer.error = error instanceof ApiError ? error.message : String(error)
     toast.error(drawer.error)
   } finally {
     drawer.loading = false
   }
 }
 
-function canDeleteComment(c: Comment) {
-  const myId = auth.claims?.account_id
-  return !!myId && myId === c.author_id
+function canDeleteComment(comment: Comment) {
+  return !!auth.claims?.account_id && auth.claims.account_id === comment.author_id
 }
 
 async function deleteComment(commentId: number) {
-  if (!props.video) return
-  if (!auth.isLoggedIn) return needLogin()
   if (!window.confirm('确认删除这条评论？')) return
   drawer.loading = true
-  drawer.error = ''
   try {
     await commentApi.remove(commentId)
     await loadComments()
     toast.info('评论已删除')
-  } catch (e) {
-    drawer.error = e instanceof ApiError ? e.message : String(e)
+  } catch (error) {
+    drawer.error = error instanceof ApiError ? error.message : String(error)
     toast.error(drawer.error)
   } finally {
     drawer.loading = false
   }
 }
 
-defineExpose({ loadComments })
+watch(() => props.video?.id, (videoId) => {
+  if (videoId) void loadComments()
+}, { immediate: true })
 </script>
 
 <template>
-  <div class="drawer-backdrop" @click.self="close">
-    <div class="drawer">
-      <div class="drawer-head">
-        <div class="drawer-title">{{ video?.title ?? '评论' }}</div>
-        <button class="drawer-x" type="button" @click="close">×</button>
-      </div>
+  <div class="fixed inset-0 z-50 flex justify-end bg-black/70 backdrop-blur-sm" @click.self="close">
+    <aside class="grid h-full w-full max-w-md grid-rows-[auto_1fr_auto] border-l border-border bg-card shadow-2xl">
+      <header class="flex items-center justify-between border-b border-border p-4">
+        <div class="min-w-0">
+          <p class="text-xs uppercase tracking-[0.18em] text-muted-foreground">Comments</p>
+          <h2 class="truncate font-semibold">{{ video?.title ?? '评论' }}</h2>
+        </div>
+        <Button variant="ghost" size="icon" @click="close">
+          <X class="size-4" />
+        </Button>
+      </header>
 
-      <div class="drawer-body">
-        <div v-if="drawer.loading" class="drawer-hint">加载中…</div>
-        <div v-else-if="drawer.error" class="drawer-hint bad">{{ drawer.error }}</div>
-        <div v-else-if="drawer.comments.length === 0" class="drawer-hint">暂无评论</div>
+      <div class="overflow-y-auto p-4">
+        <div v-if="drawer.loading && drawer.comments.length === 0" class="py-12 text-center text-sm text-muted-foreground">
+          正在加载评论…
+        </div>
+        <div v-else-if="drawer.error && drawer.comments.length === 0" class="py-12 text-center text-sm text-destructive">
+          {{ drawer.error }}
+        </div>
+        <div v-else-if="drawer.comments.length === 0" class="py-12 text-center text-sm text-muted-foreground">
+          暂无评论，来留下第一条。
+        </div>
 
-        <div class="comment" v-for="c in drawer.comments" :key="c.id">
-          <div class="comment-top">
-            <div class="comment-user">{{ c.username }}</div>
-            <div class="comment-meta mono">#{{ c.id }} · {{ new Date(c.created_at).toLocaleString() }}</div>
-          </div>
-          <div class="comment-content">{{ c.content }}</div>
-          <div class="comment-actions">
-            <button v-if="canDeleteComment(c)" class="chip danger" type="button" :disabled="drawer.loading" @click="deleteComment(c.id)">删除</button>
-          </div>
+        <div v-else class="grid gap-3">
+          <article v-for="comment in drawer.comments" :key="comment.id" class="rounded-xl border border-border bg-background/45 p-4">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-sm font-medium">@{{ comment.username }}</p>
+                <p class="mt-1 text-xs text-muted-foreground">{{ new Date(comment.created_at).toLocaleString() }}</p>
+              </div>
+              <Button
+                v-if="canDeleteComment(comment)"
+                variant="ghost"
+                size="icon"
+                class="size-8 text-muted-foreground hover:text-destructive"
+                :disabled="drawer.loading"
+                @click="deleteComment(comment.id)"
+              >
+                <Trash2 class="size-4" />
+              </Button>
+            </div>
+            <p class="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90">{{ comment.content }}</p>
+          </article>
         </div>
       </div>
 
-      <div class="drawer-foot">
-        <textarea v-model="drawer.content" placeholder="说点什么…" :disabled="drawer.loading" />
-        <div class="row" style="justify-content: space-between; margin-top: 8px">
-          <button class="chip" type="button" :disabled="drawer.loading" @click="loadComments">刷新</button>
-          <button class="chip primary" type="button" :disabled="drawer.loading || !drawer.content.trim()" @click="publishComment">发送</button>
+      <footer class="border-t border-border bg-background/35 p-4">
+        <Textarea v-model="drawer.content" placeholder="分享你的看法…" :disabled="drawer.loading" />
+        <div class="mt-3 flex items-center justify-between">
+          <Button variant="ghost" size="sm" :disabled="drawer.loading" @click="loadComments">
+            <RefreshCw class="size-4" />
+            刷新
+          </Button>
+          <Button size="sm" :disabled="drawer.loading || !drawer.content.trim()" @click="publishComment">
+            <Send class="size-4" />
+            发送
+          </Button>
         </div>
-      </div>
-    </div>
+      </footer>
+    </aside>
   </div>
 </template>
-
-<style scoped>
-.drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); backdrop-filter: blur(10px); z-index: 120; display: grid; justify-items: end; }
-.drawer { width: min(420px, calc(100vw - 18px)); height: 100vh; background: rgba(0,0,0,0.65); border-left: 1px solid rgba(255,255,255,0.12); display: grid; grid-template-rows: auto 1fr auto; }
-.drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); }
-.drawer-title { font-weight: 800; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.drawer-x { width: 34px; height: 34px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.9); cursor: pointer; font-size: 20px; line-height: 1; }
-.drawer-body { overflow: auto; padding: 12px 14px; display: grid; gap: 10px; }
-.drawer-foot { border-top: 1px solid rgba(255,255,255,0.1); padding: 12px 14px; }
-.drawer-foot textarea { width: 100%; min-height: 82px; resize: none; border-radius: 14px; border: 1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.9); padding: 10px 12px; outline: none; }
-.drawer-hint { color: rgba(255,255,255,0.78); padding: 12px 0; }
-.drawer-hint.bad { color: rgba(254,44,85,0.92); }
-.comment { border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); border-radius: 14px; padding: 10px 10px; }
-.comment-top { display: grid; gap: 3px; }
-.comment-user { font-weight: 700; font-size: 13px; }
-.comment-meta { font-size: 12px; color: rgba(255,255,255,0.55); }
-.comment-content { margin-top: 8px; font-size: 13px; line-height: 1.35; color: rgba(255,255,255,0.86); white-space: pre-wrap; word-break: break-word; }
-.comment-actions { margin-top: 10px; display: flex; justify-content: flex-end; }
-.chip { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.14); background: rgba(0,0,0,0.28); color: rgba(255,255,255,0.86); font-size: 12px; text-decoration: none; cursor: pointer; }
-.chip.primary { border-color: rgba(254,44,85,0.45); background: rgba(254,44,85,0.14); }
-.chip.danger { border-color: rgba(254,44,85,0.55); background: rgba(254,44,85,0.12); }
-@media (max-width: 900px) {
-  .drawer-backdrop { justify-items: center; align-items: end; }
-  .drawer { width: calc(100vw - 16px); height: min(72vh, 560px); border-left: none; border-top: 1px solid rgba(255,255,255,0.12); border-radius: 18px 18px 0 0; overflow: hidden; }
-}
-</style>

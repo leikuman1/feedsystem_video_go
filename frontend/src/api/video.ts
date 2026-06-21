@@ -21,12 +21,12 @@ export function uploadCover(file: File) {
 }
 
 export async function listByAuthorId(authorId: number) {
-  const videos = await postJson<Video[] | null>('/video/listByAuthorID', { author_id: authorId })
+  const videos = await postJson<Video[] | null>('/video/listByAuthorID', { author_id: authorId }, { authRequired: true })
   return normalizeVideoList(videos)
 }
 
 export function getDetail(id: number) {
-  return postJson<Video>('/video/getDetail', { id })
+  return postJson<Video>('/video/getDetail', { id }, { authRequired: true })
 }
 
 // --- Chunk Upload API ---
