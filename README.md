@@ -1,6 +1,6 @@
 # feedsystem_video_go
 
-基于 Go + Vue 3 的短视频 Feed 系统，含账号、视频、点赞、评论、关注、Feed 流、私信、通知，支持 Redis 缓存、RabbitMQ 异步 Worker、分片上传、SSE 实时推送、Docker Compose 部署。
+基于 Go + Vue 3 的短视频 Feed 系统，含账号、视频、点赞、评论、关注、Feed 流、私信和通知。系统使用 MinIO 私有对象存储、Redis 多级缓存、RabbitMQ 异步 Worker、Outbox、分片断点续传、SSE 实时推送和 Docker Compose 部署。
 
 ## 更完整的视频 Feed 流系统项目
 
@@ -11,14 +11,15 @@
 | 模块 | 功能 |
 |------|------|
 | 账号 | 注册、登录、Refresh Token、改名、改密、登出、头像上传、个人简介、主页统计 |
-| 视频 | 普通上传、5MB 分片上传、断点续传、封面上传、发布、作者作品、详情缓存、#话题标签 |
+| 视频 | MinIO Multipart、5MB 分片上传、MD5 校验、断点续传、封面上传、发布、作者作品、详情缓存、#话题标签 |
 | 点赞 | 点赞、取消点赞、是否已赞、已赞列表、RabbitMQ 异步落库、热度更新、SSE 通知 |
 | 评论 | 发布、删除、列表、@username 提及通知、RabbitMQ 异步落库、热度更新 |
 | 关注 | 关注、取关、粉丝列表、关注列表、粉丝/关注计数、SSE 通知 |
 | Feed | 推荐流、关注流、点赞榜、热榜、话题流、冷热分离、游标分页、短视频沉浸播放 |
 | 私信 | 发送私信、按对端用户查看最近 50 条会话 |
 | 通知 | 点赞/评论/关注事件通知、提及通知、SSE 实时推送、通知列表、未读计数、已读标记 |
-| 工程 | Docker Compose、`start.sh`、API/Worker 拆分运行、限流、pprof、健康检查 |
+| 展示 | 私有演示账号、深色影院界面、系统架构页、实时通知中心 |
+| 工程 | Docker Compose、Nginx HTTPS、API/Worker 拆分运行、限流、pprof、健康检查 |
 
 ## Docker Compose 一键启动
 
@@ -30,8 +31,16 @@ docker compose up -d --build
 - 前端：`http://localhost:5173`
 - 后端 API：`http://localhost:8080`
 - RabbitMQ 管理台：`http://localhost:15672`（`admin` / `password123`）
+- MinIO API：`http://localhost:9000`
+- MinIO Console：`http://localhost:9001`（默认 `minioadmin` / `minioadmin`）
 
-Docker Compose 会读取 `.env`，缺省使用 `feedsystem-dev-secret-key`。生产环境请修改 `JWT_SECRET`。
+Docker Compose 会读取 `.env`。首次体验前至少设置 `BOOTSTRAP_USERNAME` 和 `BOOTSTRAP_PASSWORD`；生产环境必须修改 JWT、数据库、Redis、RabbitMQ 和 MinIO 密钥。
+
+## 生产部署
+
+生产环境使用 `docker-compose.prod.yml`，只公开 80/443，并要求应用域名和媒体域名各自配置 HTTPS。完整步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+
+面试演示顺序、架构讲解和个人改造边界见 [INTERVIEW_DEMO.md](INTERVIEW_DEMO.md)。
 
 ## 脚本启动
 
@@ -52,7 +61,7 @@ CONFIG_PATH=configs/config.yaml ./start.sh
 
 ```bash
 # 启动依赖
-docker compose up -d mysql redis rabbitmq
+docker compose up -d mysql redis rabbitmq minio minio-init
 
 # 后端
 cd backend
@@ -165,6 +174,12 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`，在 Pull Request 以及
 | `REDIS_DB` | `0` | Redis DB |
 | `RABBITMQ_HOST` / `RABBITMQ_PORT` | 配置文件值 | RabbitMQ 地址 |
 | `RABBITMQ_USER` / `RABBITMQ_PASS` | `admin` / `password123` | RabbitMQ 账号 |
+| `MINIO_ENDPOINT` | `minio:9000` | API 容器访问 MinIO 的内网地址 |
+| `MINIO_PUBLIC_ENDPOINT` | `localhost:9000` | 浏览器访问预签名 URL 的地址 |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | `minioadmin` | MinIO 凭据，生产必须修改 |
+| `MINIO_BUCKET` | `feedsystem-media` | 私有媒体 bucket |
+| `BOOTSTRAP_USERNAME` / `BOOTSTRAP_PASSWORD` | 空 | 首次启动时幂等创建的演示账号 |
+| `ALLOW_PUBLIC_REGISTRATION` | `false` | 是否开放公网注册 |
 
 详见 `.env.example`。
 
@@ -172,6 +187,7 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`，在 Pull Request 以及
 
 - `GET /healthz` 返回后端健康状态。
 - 本地配置默认开启 pprof：API `localhost:6060`，Worker `localhost:6061`。
-- 上传文件写入 `backend/.run/uploads`；Docker 环境挂载到 `backend_uploads` volume。
+- 视频、封面和头像存入 MinIO 私有 bucket；数据库只保存 object key。
+- API 响应阶段生成短期预签名 URL，数据库和 Redis 不缓存带签名地址。
 - Redis 用于 Token 缓存、视频实体缓存、Feed 时间线、热榜窗口、分片上传会话。
 - RabbitMQ Topic Exchange 覆盖点赞、评论、关注、热度、视频时间线事件，并配置 DLX。
