@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import * as accountApi from '@/api/account'
 import { useAuthStore } from '@/stores/auth'
 import AccountView from '@/views/AccountView.vue'
+import ArchitectureView from '@/views/ArchitectureView.vue'
 import ChangePasswordView from '@/views/ChangePasswordView.vue'
 import HomeView from '@/views/HomeView.vue'
 import HotView from '@/views/HotView.vue'
@@ -30,6 +31,7 @@ const router = createRouter({
     { path: '/messages', name: 'message-list', component: MessageView },
     { path: '/messages/:peerId', name: 'messages', component: MessageView },
     { path: '/notifications', name: 'notifications', component: NotificationView },
+    { path: '/architecture', name: 'architecture', component: ArchitectureView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

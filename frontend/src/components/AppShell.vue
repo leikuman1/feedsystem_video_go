@@ -9,6 +9,7 @@ import {
   LogOut,
   Menu,
   MessageCircle,
+  Network,
   Search,
   Settings,
   Upload,
@@ -39,6 +40,7 @@ const navItems = [
   { to: '/account', label: '我的', icon: UserRound },
   { to: '/messages', label: '私信', icon: MessageCircle },
   { to: '/notifications', label: '通知', icon: Bell },
+  { to: '/architecture', label: '架构', icon: Network },
   { to: '/settings', label: '设置', icon: Settings },
 ]
 
