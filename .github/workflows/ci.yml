@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - dev
 
 permissions:
   contents: read
@@ -15,6 +16,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  deployment-config:
+    name: Deployment config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate local compose
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Validate production compose
+        env:
+          APP_DOMAIN: video.example.com
+          MEDIA_DOMAIN: media.example.com
+          MYSQL_ROOT_PASSWORD: test-password
+          REDIS_PASSWORD: test-password
+          RABBITMQ_USER: test-user
+          RABBITMQ_PASS: test-password
+          JWT_SECRET: test-jwt-secret-at-least-32-characters
+          MINIO_ACCESS_KEY: test-access
+          MINIO_SECRET_KEY: test-secret-password
+          BOOTSTRAP_USERNAME: interviewer
+          BOOTSTRAP_PASSWORD: test-demo-password
+        run: docker compose -f docker-compose.prod.yml config --quiet
+
   backend:
     name: Backend
     runs-on: ubuntu-latest
