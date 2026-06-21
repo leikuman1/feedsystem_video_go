@@ -2,19 +2,24 @@ package video
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"sort"
+	"sync"
 	"testing"
+	"time"
 
 	rediscache "feedsystem_video_go/internal/middleware/redis"
+	"feedsystem_video_go/internal/storage"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
@@ -24,6 +29,122 @@ import (
 // ── helpers ──
 
 const testAccountID uint = 1
+
+type fakeMultipartUpload struct {
+	key   string
+	parts map[int][]byte
+}
+
+type fakeObjectStorage struct {
+	mu             sync.Mutex
+	nextUploadID   int
+	uploads        map[string]*fakeMultipartUpload
+	objects        map[string][]byte
+	failPartUpload bool
+}
+
+func newFakeObjectStorage() *fakeObjectStorage {
+	return &fakeObjectStorage{
+		uploads: make(map[string]*fakeMultipartUpload),
+		objects: make(map[string][]byte),
+	}
+}
+
+func (s *fakeObjectStorage) EnsureReady(context.Context) error {
+	return nil
+}
+
+func (s *fakeObjectStorage) PutObject(
+	_ context.Context,
+	key string,
+	reader io.Reader,
+	_ int64,
+	_ string,
+) (storage.ObjectInfo, error) {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return storage.ObjectInfo{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.objects[key] = data
+	return storage.ObjectInfo{Key: key, ETag: computeMD5(data), Size: int64(len(data))}, nil
+}
+
+func (s *fakeObjectStorage) NewMultipartUpload(_ context.Context, key, _ string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextUploadID++
+	uploadID := fmt.Sprintf("storage-upload-%d", s.nextUploadID)
+	s.uploads[uploadID] = &fakeMultipartUpload{key: key, parts: make(map[int][]byte)}
+	return uploadID, nil
+}
+
+func (s *fakeObjectStorage) PutObjectPart(
+	_ context.Context,
+	_ string,
+	uploadID string,
+	partNumber int,
+	reader io.Reader,
+	_ int64,
+) (storage.CompletedPart, error) {
+	if s.failPartUpload {
+		return storage.CompletedPart{}, errors.New("part upload failed")
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return storage.CompletedPart{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	upload := s.uploads[uploadID]
+	if upload == nil {
+		return storage.CompletedPart{}, errors.New("upload not found")
+	}
+	upload.parts[partNumber] = data
+	return storage.CompletedPart{PartNumber: partNumber, ETag: computeMD5(data)}, nil
+}
+
+func (s *fakeObjectStorage) CompleteMultipartUpload(
+	_ context.Context,
+	key, uploadID string,
+	parts []storage.CompletedPart,
+	_ string,
+) (storage.ObjectInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	upload := s.uploads[uploadID]
+	if upload == nil {
+		return storage.ObjectInfo{}, errors.New("upload not found")
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
+	var merged bytes.Buffer
+	for _, part := range parts {
+		merged.Write(upload.parts[part.PartNumber])
+	}
+	data := append([]byte(nil), merged.Bytes()...)
+	s.objects[key] = data
+	delete(s.uploads, uploadID)
+	return storage.ObjectInfo{Key: key, ETag: computeMD5(data), Size: int64(len(data))}, nil
+}
+
+func (s *fakeObjectStorage) AbortMultipartUpload(_ context.Context, _ string, uploadID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.uploads, uploadID)
+	return nil
+}
+
+func (s *fakeObjectStorage) RemoveObject(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.objects, key)
+	return nil
+}
+
+func (s *fakeObjectStorage) PresignedGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
+	return "https://media.test/" + key, nil
+}
 
 func setupTestEnv(t *testing.T) (*ChunkUploadHandler, func()) {
 	t.Helper()
@@ -38,20 +159,9 @@ func setupTestEnv(t *testing.T) (*ChunkUploadHandler, func()) {
 		goredis.NewClient(&goredis.Options{Addr: mr.Addr()}),
 		"",
 	)
-	handler := NewChunkUploadHandler(client)
-
-	origDir, _ := os.Getwd()
-	tmpDir, err := os.MkdirTemp("", "chunk-upload-test-*")
-	if err != nil {
-		t.Fatalf("create temp dir: %v", err)
-	}
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	handler := NewChunkUploadHandler(client, newFakeObjectStorage(), 2*time.Hour)
 
 	cleanup := func() {
-		os.Chdir(origDir)
-		os.RemoveAll(tmpDir)
 		client.Close()
 		mr.Close()
 	}
@@ -175,16 +285,17 @@ func completeUpload(t *testing.T, h *ChunkUploadHandler, uploadID string) map[st
 
 // readMergedFile extracts the file path from the response URL and reads it.
 // URL format: http://localhost/static/videos/<accountID>/<date>/<name>.mp4
-func readMergedFile(t *testing.T, resp map[string]interface{}) []byte {
+func readMergedFile(t *testing.T, h *ChunkUploadHandler, resp map[string]interface{}) []byte {
 	t.Helper()
-	urlStr := resp["url"].(string)
-	idx := len("http://localhost/static/")
-	fsPath := filepath.Join(".run", "uploads", urlStr[idx:])
-	data, err := os.ReadFile(fsPath)
-	if err != nil {
-		t.Fatalf("read merged file %s: %v", fsPath, err)
+	key := resp["object_key"].(string)
+	store := h.storage.(*fakeObjectStorage)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	data, ok := store.objects[key]
+	if !ok {
+		t.Fatalf("object %q not found", key)
 	}
-	return data
+	return append([]byte(nil), data...)
 }
 
 // ── tests ──
@@ -214,7 +325,7 @@ func TestFullChunkUploadFlow(t *testing.T) {
 	}
 
 	// verify merged file content matches original chunks
-	merged := readMergedFile(t, resp)
+	merged := readMergedFile(t, h, resp)
 	var expected bytes.Buffer
 	for _, ch := range chunks {
 		expected.Write(ch)
@@ -223,11 +334,6 @@ func TestFullChunkUploadFlow(t *testing.T) {
 		t.Fatalf("merged file content mismatch: got %d bytes, want %d bytes", len(merged), expected.Len())
 	}
 
-	// verify temp dir cleaned up
-	tmpDir := filepath.Join(".run", "uploads", "tmp", uploadID)
-	if _, err := os.Stat(tmpDir); !os.IsNotExist(err) {
-		t.Fatalf("temp dir should be removed: %s", tmpDir)
-	}
 }
 
 func TestBreakpointResume(t *testing.T) {
@@ -275,7 +381,7 @@ func TestBreakpointResume(t *testing.T) {
 	}
 
 	resp = completeUpload(t, h, uploadID)
-	merged := readMergedFile(t, resp)
+	merged := readMergedFile(t, h, resp)
 	var expected bytes.Buffer
 	for _, ch := range chunks {
 		expected.Write(ch)
@@ -424,4 +530,53 @@ func TestChunkStatus(t *testing.T) {
 	uploadChunk(t, h, uploadID, 1, chunkHashes[1], chunks[1])
 	uploadChunk(t, h, uploadID, 2, chunkHashes[2], chunks[2])
 	assertStatus(3)
+}
+
+func TestChunkStorageFailureDoesNotAdvanceSession(t *testing.T) {
+	h, cleanup := setupTestEnv(t)
+	defer cleanup()
+
+	chunks, chunkHashes, fileHash := makeTestChunks(t, 1, 256)
+	uploadID := initUpload(t, h, "failure.mp4", 256, 256, 1, fileHash)
+	h.storage.(*fakeObjectStorage).failPartUpload = true
+
+	c, rec := newMultipartContext(t, "/video/chunk/upload", map[string]string{
+		"upload_id":   uploadID,
+		"chunk_index": "0",
+		"chunk_hash":  chunkHashes[0],
+	}, chunks[0])
+	h.UploadChunk(c)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	c, rec = newJSONContext(t, "/video/chunk/status", ChunkStatusRequest{UploadID: uploadID})
+	h.ChunkStatus(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	resp := parseJSON(t, rec)
+	if len(resp["uploaded_chunks"].([]interface{})) != 0 {
+		t.Fatal("failed part must not be marked uploaded")
+	}
+}
+
+func TestAbortChunkUpload(t *testing.T) {
+	h, cleanup := setupTestEnv(t)
+	defer cleanup()
+
+	_, _, fileHash := makeTestChunks(t, 1, 128)
+	uploadID := initUpload(t, h, "abort.mp4", 128, 128, 1, fileHash)
+
+	c, rec := newJSONContext(t, "/video/chunk/abort", AbortChunkUploadRequest{UploadID: uploadID})
+	h.AbortChunkUpload(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("abort: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	c, rec = newJSONContext(t, "/video/chunk/status", ChunkStatusRequest{UploadID: uploadID})
+	h.ChunkStatus(c)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected removed session, got %d", rec.Code)
+	}
 }

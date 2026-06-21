@@ -73,7 +73,7 @@ func SetRouter(
 	}
 	videoService := video.NewVideoService(videoRepository, cache, popularityMQ)
 	videoHandler := video.NewVideoHandler(videoService, accountService, objectStore, signedURLExpiry)
-	chunkHandler := video.NewChunkUploadHandler(cache)
+	chunkHandler := video.NewChunkUploadHandler(cache, objectStore, signedURLExpiry)
 	videoGroup := r.Group("/video")
 	{
 		videoGroup.POST("/listByAuthorID", videoHandler.ListByAuthorID)
@@ -89,6 +89,7 @@ func SetRouter(
 		protectedVideoGroup.POST("/chunk/upload", chunkHandler.UploadChunk)
 		protectedVideoGroup.POST("/chunk/status", chunkHandler.ChunkStatus)
 		protectedVideoGroup.POST("/chunk/complete", chunkHandler.CompleteChunkUpload)
+		protectedVideoGroup.POST("/chunk/abort", chunkHandler.AbortChunkUpload)
 	}
 	// like
 	likeMQ, err := rabbitmq.NewLikeMQ(rmq)
