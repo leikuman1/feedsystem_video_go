@@ -14,6 +14,7 @@ type Config struct {
 	Database            DatabaseConfig      `yaml:"database"`
 	Redis               RedisConfig         `yaml:"redis"`
 	RabbitMQ            RabbitMQConfig      `yaml:"rabbitmq"`
+	MinIO               MinIOConfig         `yaml:"minio"`
 	ObservabilityConfig ObservabilityConfig `yaml:"observability"`
 }
 
@@ -41,6 +42,40 @@ type RabbitMQConfig struct {
 	Port     int    `yaml:"port"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+}
+
+type MinIOConfig struct {
+	Endpoint               string `yaml:"endpoint"`
+	PublicEndpoint         string `yaml:"public_endpoint"`
+	AccessKey              string `yaml:"access_key"`
+	SecretKey              string `yaml:"secret_key"`
+	Bucket                 string `yaml:"bucket"`
+	Region                 string `yaml:"region"`
+	UseSSL                 bool   `yaml:"use_ssl"`
+	PublicUseSSL           bool   `yaml:"public_use_ssl"`
+	SignedURLExpirySeconds int    `yaml:"signed_url_expiry_seconds"`
+}
+
+func (c MinIOConfig) Validate() error {
+	if c.Endpoint == "" {
+		return errors.New("minio endpoint is required")
+	}
+	if c.PublicEndpoint == "" {
+		return errors.New("minio public endpoint is required")
+	}
+	if c.AccessKey == "" {
+		return errors.New("minio access key is required")
+	}
+	if c.SecretKey == "" {
+		return errors.New("minio secret key is required")
+	}
+	if c.Bucket == "" {
+		return errors.New("minio bucket is required")
+	}
+	if c.SignedURLExpirySeconds <= 0 {
+		return errors.New("minio signed URL expiry must be positive")
+	}
+	return nil
 }
 
 type ObservabilityConfig struct {
@@ -126,6 +161,39 @@ func ApplyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("RABBITMQ_PASS"); v != "" {
 		cfg.RabbitMQ.Password = v
 	}
+	if v := os.Getenv("MINIO_ENDPOINT"); v != "" {
+		cfg.MinIO.Endpoint = v
+	}
+	if v := os.Getenv("MINIO_PUBLIC_ENDPOINT"); v != "" {
+		cfg.MinIO.PublicEndpoint = v
+	}
+	if v := os.Getenv("MINIO_ACCESS_KEY"); v != "" {
+		cfg.MinIO.AccessKey = v
+	}
+	if v := os.Getenv("MINIO_SECRET_KEY"); v != "" {
+		cfg.MinIO.SecretKey = v
+	}
+	if v := os.Getenv("MINIO_BUCKET"); v != "" {
+		cfg.MinIO.Bucket = v
+	}
+	if v := os.Getenv("MINIO_REGION"); v != "" {
+		cfg.MinIO.Region = v
+	}
+	if v := os.Getenv("MINIO_USE_SSL"); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.MinIO.UseSSL = enabled
+		}
+	}
+	if v := os.Getenv("MINIO_PUBLIC_USE_SSL"); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.MinIO.PublicUseSSL = enabled
+		}
+	}
+	if v := os.Getenv("MINIO_SIGNED_URL_EXPIRY_SECONDS"); v != "" {
+		if seconds, err := strconv.Atoi(v); err == nil {
+			cfg.MinIO.SignedURLExpirySeconds = seconds
+		}
+	}
 }
 
 // bool用来表示是否使用了默认配置，true表示使用了默认配置
@@ -163,6 +231,17 @@ func DefaultLocalConfig() Config {
 			Port:     5672,
 			Username: "admin",
 			Password: "password123",
+		},
+		MinIO: MinIOConfig{
+			Endpoint:               "localhost:9000",
+			PublicEndpoint:         "localhost:9000",
+			AccessKey:              "minioadmin",
+			SecretKey:              "minioadmin",
+			Bucket:                 "feedsystem-media",
+			Region:                 "us-east-1",
+			UseSSL:                 false,
+			PublicUseSSL:           false,
+			SignedURLExpirySeconds: 7200,
 		},
 		ObservabilityConfig: ObservabilityConfig{
 			Pprof: PprofConfig{

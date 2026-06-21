@@ -19,6 +19,17 @@ rabbitmq:
   port: 5672
   username: admin
   password: password123
+
+minio:
+  endpoint: localhost:9000
+  public_endpoint: localhost:9000
+  access_key: minioadmin
+  secret_key: minioadmin
+  bucket: feedsystem-media
+  region: us-east-1
+  use_ssl: false
+  public_use_ssl: false
+  signed_url_expiry_seconds: 7200
   
 observability:
   pprof:
