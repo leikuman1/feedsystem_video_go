@@ -2,11 +2,21 @@ import { postForm, postJson } from './client'
 import { normalizeVideoList } from './normalize'
 import type { Video } from './types'
 
-export function publishVideo(input: { title: string; description: string; play_url: string; cover_url: string }) {
+export function publishVideo(input: {
+  title: string
+  description: string
+  play_object_key: string
+  cover_object_key: string
+}) {
   return postJson<Video>('/video/publish', input, { authRequired: true })
 }
 
-export type UploadResponse = { url: string; play_url?: string; cover_url?: string }
+export type UploadResponse = {
+  object_key: string
+  url: string
+  play_url?: string
+  cover_url?: string
+}
 
 export function uploadVideo(file: File) {
   const fd = new FormData()
@@ -65,4 +75,8 @@ export function chunkStatus(uploadId: string) {
 
 export function completeChunkUpload(uploadId: string) {
   return postJson<UploadResponse>('/video/chunk/complete', { upload_id: uploadId }, { authRequired: true })
+}
+
+export function abortChunkUpload(uploadId: string) {
+  return postJson<{ message: string }>('/video/chunk/abort', { upload_id: uploadId }, { authRequired: true })
 }

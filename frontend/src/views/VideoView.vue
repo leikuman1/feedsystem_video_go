@@ -1,517 +1,409 @@
 <script setup lang="ts">
-import { onUnmounted, reactive, ref, watch } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
-
-import AppShell from '../components/AppShell.vue'
-import { ApiError } from '../api/client'
-import * as videoApi from '../api/video'
-import type { Video } from '../api/types'
-import { useAuthStore } from '../stores/auth'
-import { useToastStore } from '../stores/toast'
+import { nextTick, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import {
+  CheckCircle2,
+  FileVideo,
+  Image,
+  RotateCcw,
+  UploadCloud,
+  X,
+} from '@lucide/vue'
+import gsap from 'gsap'
 import SparkMD5 from 'spark-md5'
 
+import { ApiError } from '@/api/client'
+import type { Video } from '@/api/types'
+import * as videoApi from '@/api/video'
+import AppShell from '@/components/AppShell.vue'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
+import { Textarea } from '@/components/ui/textarea'
+import { useToastStore } from '@/stores/toast'
+
 const router = useRouter()
-const auth = useAuthStore()
 const toast = useToastStore()
-
-const busy = ref(false)
-const stage = ref('')
-const published = ref<Video | null>(null)
-
 const videoInput = ref<HTMLInputElement | null>(null)
 const coverInput = ref<HTMLInputElement | null>(null)
+const successCard = ref<HTMLElement | null>(null)
+const busy = ref(false)
+const published = ref<Video | null>(null)
+const activeUploadId = ref('')
 
-const publishForm = reactive({
+const form = reactive({
   title: '',
   description: '',
   video: null as File | null,
   cover: null as File | null,
 })
 
-const preview = reactive({
-  videoUrl: '',
-  coverUrl: '',
-})
-
-// chunk upload progress
-const uploadProgress = reactive({
+const preview = reactive({ videoUrl: '', coverUrl: '' })
+const upload = reactive({
+  stage: '等待选择文件',
   uploadedBytes: 0,
   totalBytes: 0,
   percent: 0,
+  hashPercent: 0,
+  resumedChunks: 0,
+  totalChunks: 0,
+  retryCount: 0,
 })
 
-function setPreviewVideo(file: File | null) {
-  if (preview.videoUrl) URL.revokeObjectURL(preview.videoUrl)
-  preview.videoUrl = file ? URL.createObjectURL(file) : ''
+const CHUNK_SIZE = 5 << 20
+const MAX_CONCURRENT = 3
+const MAX_RETRIES = 3
+
+function setPreview(kind: 'video' | 'cover', file: File | null) {
+  const key = kind === 'video' ? 'videoUrl' : 'coverUrl'
+  if (preview[key]) URL.revokeObjectURL(preview[key])
+  preview[key] = file ? URL.createObjectURL(file) : ''
 }
 
-function setPreviewCover(file: File | null) {
-  if (preview.coverUrl) URL.revokeObjectURL(preview.coverUrl)
-  preview.coverUrl = file ? URL.createObjectURL(file) : ''
-}
-
-watch(
-  () => publishForm.video,
-  (f) => setPreviewVideo(f),
-)
-
-watch(
-  () => publishForm.cover,
-  (f) => setPreviewCover(f),
-)
-
+watch(() => form.video, (file) => setPreview('video', file))
+watch(() => form.cover, (file) => setPreview('cover', file))
 onUnmounted(() => {
-  setPreviewVideo(null)
-  setPreviewCover(null)
+  setPreview('video', null)
+  setPreview('cover', null)
 })
 
-function pickVideo(e: Event) {
-  const input = e.target as HTMLInputElement
-  publishForm.video = input.files?.[0] ?? null
+function resetUploadState() {
+  upload.stage = '等待上传'
+  upload.uploadedBytes = 0
+  upload.totalBytes = 0
+  upload.percent = 0
+  upload.hashPercent = 0
+  upload.resumedChunks = 0
+  upload.totalChunks = 0
+  upload.retryCount = 0
+  activeUploadId.value = ''
 }
 
-function pickCover(e: Event) {
-  const input = e.target as HTMLInputElement
-  publishForm.cover = input.files?.[0] ?? null
+function selectVideo(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] ?? null
+  if (file && (file.type !== 'video/mp4' || file.size > 200 * 1024 * 1024)) {
+    toast.error('仅支持不超过 200MB 的 MP4 视频')
+    input.value = ''
+    return
+  }
+  form.video = file
 }
 
-function openVideoPicker() {
-  videoInput.value?.click()
+function selectCover(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] ?? null
+  if (file && (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 10 * 1024 * 1024)) {
+    toast.error('封面仅支持不超过 10MB 的 JPG、PNG 或 WebP')
+    input.value = ''
+    return
+  }
+  form.cover = file
 }
 
-function openCoverPicker() {
-  coverInput.value?.click()
+function clearFile(kind: 'video' | 'cover') {
+  if (kind === 'video') {
+    form.video = null
+    if (videoInput.value) videoInput.value.value = ''
+  } else {
+    form.cover = null
+    if (coverInput.value) coverInput.value.value = ''
+  }
 }
 
-function clearVideo() {
-  publishForm.video = null
-  if (videoInput.value) videoInput.value.value = ''
-}
-
-function clearCover() {
-  publishForm.cover = null
-  if (coverInput.value) coverInput.value.value = ''
-}
-
-function resetProgress() {
-  uploadProgress.uploadedBytes = 0
-  uploadProgress.totalBytes = 0
-  uploadProgress.percent = 0
-}
-
-// Compute file md5 by reading in 2MB chunks
-async function computeFileMD5(file: File): Promise<string> {
-  const chunkSize = 2 << 20
+async function computeFileMD5(file: File) {
+  upload.stage = '计算文件指纹'
+  const readSize = 2 << 20
   const spark = new SparkMD5.ArrayBuffer()
-  for (let offset = 0; offset < file.size; offset += chunkSize) {
-    const end = Math.min(offset + chunkSize, file.size)
-    const buf = await file.slice(offset, end).arrayBuffer()
-    spark.append(buf)
+  for (let offset = 0; offset < file.size; offset += readSize) {
+    const end = Math.min(offset + readSize, file.size)
+    spark.append(await file.slice(offset, end).arrayBuffer())
+    upload.hashPercent = Math.round((end / file.size) * 100)
   }
   return spark.end()
 }
 
-// Compute md5 for a single chunk blob
-async function computeChunkMD5(blob: Blob): Promise<string> {
-  const buf = await blob.arrayBuffer()
+async function computeChunkMD5(blob: Blob) {
   const spark = new SparkMD5.ArrayBuffer()
-  spark.append(buf)
+  spark.append(await blob.arrayBuffer())
   return spark.end()
 }
 
-const CHUNK_SIZE = 5 << 20 // 5 MB
-const MAX_CONCURRENT = 3
-const MAX_RETRIES = 3
-
-async function uploadVideoChunked(file: File): Promise<videoApi.UploadResponse> {
+async function uploadVideoChunked(file: File) {
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+  upload.totalChunks = totalChunks
+  upload.totalBytes = file.size
   const fileHash = await computeFileMD5(file)
 
-  stage.value = '初始化上传'
-  const initRes = await videoApi.initChunkUpload({
+  upload.stage = '初始化 MinIO Multipart'
+  const initialized = await videoApi.initChunkUpload({
     filename: file.name,
     file_size: file.size,
     chunk_size: CHUNK_SIZE,
     total_chunks: totalChunks,
     file_hash: fileHash,
   })
+  activeUploadId.value = initialized.upload_id
+  const uploadedChunks = new Set(initialized.uploaded_chunks)
+  upload.resumedChunks = uploadedChunks.size
+  upload.uploadedBytes = [...uploadedChunks].reduce((sum, chunkIndex) => {
+    const size = chunkIndex === totalChunks - 1 ? file.size - chunkIndex * CHUNK_SIZE : CHUNK_SIZE
+    return sum + size
+  }, 0)
+  upload.percent = Math.round((upload.uploadedBytes / upload.totalBytes) * 100)
 
-  const uploadId = initRes.upload_id
-  const uploadedSet = new Set(initRes.uploaded_chunks)
+  const pending = Array.from({ length: totalChunks }, (_, index) => index)
+    .filter((index) => !uploadedChunks.has(index))
 
-  uploadProgress.totalBytes = file.size
-  uploadProgress.uploadedBytes = uploadedSet.size * CHUNK_SIZE
-  // Last chunk might be smaller
-  if (uploadedSet.has(totalChunks - 1)) {
-    uploadProgress.uploadedBytes -= CHUNK_SIZE
-    uploadProgress.uploadedBytes += file.size - (totalChunks - 1) * CHUNK_SIZE
-  }
-  uploadProgress.percent = uploadProgress.totalBytes > 0
-    ? Math.round((uploadProgress.uploadedBytes / uploadProgress.totalBytes) * 100)
-    : 0
+  upload.stage = pending.length ? '上传视频分片' : '恢复完成，提交对象'
+  let cursor = 0
 
-  // Build list of chunks that still need uploading
-  const pending: number[] = []
-  for (let i = 0; i < totalChunks; i++) {
-    if (!uploadedSet.has(i)) {
-      pending.push(i)
-    }
-  }
-
-  if (pending.length === 0) {
-    stage.value = '合并文件'
-    return videoApi.completeChunkUpload(uploadId)
-  }
-
-  stage.value = '上传视频'
-
-  // Upload chunks with concurrency limit
-  let idx = 0
-  const advanceProgress = (chunkIndex: number) => {
-    const chunkBytes = chunkIndex === totalChunks - 1
-      ? file.size - chunkIndex * CHUNK_SIZE
-      : CHUNK_SIZE
-    uploadProgress.uploadedBytes += chunkBytes
-    uploadProgress.percent = Math.round((uploadProgress.uploadedBytes / uploadProgress.totalBytes) * 100)
-  }
-
-  const uploadOne = async (chunkIndex: number): Promise<void> => {
+  async function uploadOne(chunkIndex: number) {
     const start = chunkIndex * CHUNK_SIZE
     const end = Math.min(start + CHUNK_SIZE, file.size)
     const blob = file.slice(start, end)
-    const chunkHash = await computeChunkMD5(blob)
+    const hash = await computeChunkMD5(blob)
+    let lastError: unknown
 
-    let lastErr: unknown
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
       try {
-        await videoApi.uploadChunk(uploadId, chunkIndex, chunkHash, blob)
-        advanceProgress(chunkIndex)
+        await videoApi.uploadChunk(initialized.upload_id, chunkIndex, hash, blob)
+        upload.uploadedBytes += blob.size
+        upload.percent = Math.round((upload.uploadedBytes / upload.totalBytes) * 100)
         return
-      } catch (e) {
-        lastErr = e
+      } catch (error) {
+        lastError = error
+        upload.retryCount += 1
       }
     }
-    throw lastErr
+    throw lastError
   }
 
   await new Promise<void>((resolve, reject) => {
     let active = 0
-    let done = false
-
-    const next = () => {
-      if (done) return
-      if (idx >= pending.length && active === 0) {
+    let stopped = false
+    const schedule = () => {
+      if (stopped) return
+      if (cursor >= pending.length && active === 0) {
         resolve()
         return
       }
-      while (active < MAX_CONCURRENT && idx < pending.length) {
-        const ci = pending[idx++] as number
-        active++
-        uploadOne(ci)
-          .then(() => { active--; next() })
-          .catch((e) => { done = true; reject(e) })
+      while (active < MAX_CONCURRENT && cursor < pending.length) {
+        const chunkIndex = pending[cursor++] as number
+        active += 1
+        uploadOne(chunkIndex)
+          .then(() => {
+            active -= 1
+            schedule()
+          })
+          .catch((error) => {
+            stopped = true
+            reject(error)
+          })
       }
     }
-    next()
+    schedule()
   })
 
-  stage.value = '合并文件'
-  return videoApi.completeChunkUpload(uploadId)
+  upload.stage = '提交 MinIO 对象'
+  const response = await videoApi.completeChunkUpload(initialized.upload_id)
+  activeUploadId.value = ''
+  return response
 }
 
-async function onPublish() {
+async function publish() {
   if (busy.value) return
-  if (!auth.isLoggedIn) {
-    toast.error('请先登录')
-    await router.push('/account')
-    return
-  }
-
-  const title = publishForm.title.trim()
-  const description = publishForm.description.trim()
-  if (!title) {
-    toast.error('请输入 title')
-    return
-  }
-  if (!publishForm.video) {
-    toast.error('请选择视频文件（.mp4）')
-    return
-  }
-  if (!publishForm.cover) {
-    toast.error('请选择封面图片（jpg/png/webp）')
+  const title = form.title.trim()
+  if (!title || !form.video || !form.cover) {
+    toast.error('请填写标题并选择视频与封面')
     return
   }
 
   busy.value = true
-  stage.value = ''
   published.value = null
-  resetProgress()
+  resetUploadState()
   try {
-    const videoRes = await uploadVideoChunked(publishForm.video!)
-
-    stage.value = '上传封面'
-    const coverRes = await videoApi.uploadCover(publishForm.cover!)
-
-    const coverUrl = coverRes.url || coverRes.cover_url || ''
-    const playUrl = videoRes.url || videoRes.play_url || ''
-    if (!coverUrl || !playUrl) {
-      toast.error('上传成功但缺少 url')
-      return
+    const videoUpload = await uploadVideoChunked(form.video)
+    upload.stage = '上传封面'
+    const coverUpload = await videoApi.uploadCover(form.cover)
+    upload.stage = '写入视频与 Outbox'
+    published.value = await videoApi.publishVideo({
+      title,
+      description: form.description.trim(),
+      play_object_key: videoUpload.object_key,
+      cover_object_key: coverUpload.object_key,
+    })
+    upload.stage = '发布完成'
+    upload.percent = 100
+    toast.success('视频已发布')
+    await nextTick()
+    if (successCard.value && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      gsap.from(successCard.value, { opacity: 0, y: 20, duration: 0.5, ease: 'power2.out' })
     }
-
-    stage.value = '发布视频'
-    const res = await videoApi.publishVideo({ title, description, play_url: playUrl, cover_url: coverUrl })
-
-    published.value = res
-    toast.success('已发布')
-
-    publishForm.title = ''
-    publishForm.description = ''
-    clearVideo()
-    clearCover()
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : String(e)
-    toast.error(msg)
+  } catch (error) {
+    if (activeUploadId.value) {
+      await videoApi.abortChunkUpload(activeUploadId.value).catch(() => undefined)
+      activeUploadId.value = ''
+    }
+    upload.stage = '上传失败'
+    toast.error(error instanceof ApiError ? error.message : String(error))
   } finally {
     busy.value = false
-    stage.value = ''
-    resetProgress()
   }
+}
+
+function resetForm() {
+  form.title = ''
+  form.description = ''
+  clearFile('video')
+  clearFile('cover')
+  published.value = null
+  resetUploadState()
 }
 </script>
 
 <template>
   <AppShell>
-    <div class="publish-wrap">
-      <div class="card publish-card">
-        <div class="row" style="justify-content: space-between; align-items: baseline">
-          <p class="title" style="margin: 0">发布视频</p>
-          <div v-if="busy" class="pill">进行中：{{ stage || '…' }}</div>
-        </div>
-        <p class="subtle" style="margin-top: 10px">选择视频文件与封面图片，上传到本机后自动生成 URL，再写入 `/video/publish`。</p>
-
-        <div class="grid form-grid" style="margin-top: 16px">
-          <div>
-            <label>title</label>
-            <input v-model.trim="publishForm.title" class="big-input" :disabled="busy" />
-          </div>
-          <div>
-            <label>description</label>
-            <textarea v-model.trim="publishForm.description" class="big-input" :disabled="busy" />
-          </div>
-          <div class="grid two">
+    <div class="mx-auto grid max-w-6xl gap-6 xl:grid-cols-[1fr_22rem]">
+      <Card>
+        <CardHeader>
+          <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <label>video (.mp4)</label>
-              <input ref="videoInput" class="file-native" type="file" accept="video/mp4" :disabled="busy" @change="pickVideo" />
-              <div class="file-box">
-                <button type="button" :disabled="busy" @click="openVideoPicker">选择视频</button>
-                <div class="file-name" :class="publishForm.video ? '' : 'muted'">
-                  {{ publishForm.video ? publishForm.video.name : '未选择文件' }}
-                </div>
-                <button v-if="publishForm.video" type="button" :disabled="busy" @click="clearVideo">清除</button>
-              </div>
-              <div v-if="publishForm.video" class="subtle" style="margin-top: 6px">
-                已选择：{{ publishForm.video.name }}（{{ Math.ceil(publishForm.video.size / 1024 / 1024) }} MB）
-              </div>
+              <Badge variant="outline" class="mb-3 border-primary/30 text-primary">MINIO MULTIPART</Badge>
+              <CardTitle class="text-2xl">发布新视频</CardTitle>
+              <CardDescription class="mt-2">
+                浏览器计算 MD5，Go API 校验分片并直接写入 MinIO，Redis 保存断点状态。
+              </CardDescription>
             </div>
-            <div>
-              <label>cover (jpg/png/webp)</label>
-              <input
-                ref="coverInput"
-                class="file-native"
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
+            <Button variant="ghost" size="sm" :disabled="busy" @click="resetForm">
+              <RotateCcw class="size-4" />
+              重置
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent class="grid gap-6">
+          <div class="grid gap-5 md:grid-cols-2">
+            <label class="grid gap-2 text-sm md:col-span-2">
+              <span class="text-muted-foreground">标题</span>
+              <Input v-model="form.title" :disabled="busy" placeholder="一句清晰的标题，可包含 #话题" />
+            </label>
+            <label class="grid gap-2 text-sm md:col-span-2">
+              <span class="text-muted-foreground">描述</span>
+              <Textarea v-model="form.description" :disabled="busy" placeholder="补充视频内容与背景…" />
+            </label>
+
+            <div class="grid gap-3">
+              <span class="text-sm text-muted-foreground">视频文件</span>
+              <input ref="videoInput" class="hidden" type="file" accept="video/mp4" :disabled="busy" @change="selectVideo" />
+              <button
+                class="group grid min-h-44 place-items-center rounded-xl border border-dashed border-border bg-background/40 p-5 text-center transition hover:border-primary/50 hover:bg-primary/5"
+                type="button"
                 :disabled="busy"
-                @change="pickCover"
-              />
-              <div class="file-box">
-                <button type="button" :disabled="busy" @click="openCoverPicker">选择封面</button>
-                <div class="file-name" :class="publishForm.cover ? '' : 'muted'">
-                  {{ publishForm.cover ? publishForm.cover.name : '未选择文件' }}
+                @click="videoInput?.click()"
+              >
+                <div>
+                  <FileVideo class="mx-auto size-8 text-primary" />
+                  <p class="mt-3 text-sm font-medium">{{ form.video?.name ?? '选择 MP4 视频' }}</p>
+                  <p class="mt-1 text-xs text-muted-foreground">
+                    {{ form.video ? `${(form.video.size / 1024 / 1024).toFixed(1)} MB` : '最大 200MB，5MB 分片' }}
+                  </p>
                 </div>
-                <button v-if="publishForm.cover" type="button" :disabled="busy" @click="clearCover">清除</button>
+              </button>
+              <Button v-if="form.video" variant="ghost" size="sm" :disabled="busy" @click="clearFile('video')">
+                <X class="size-4" />
+                移除视频
+              </Button>
+            </div>
+
+            <div class="grid gap-3">
+              <span class="text-sm text-muted-foreground">视频封面</span>
+              <input ref="coverInput" class="hidden" type="file" accept="image/jpeg,image/png,image/webp" :disabled="busy" @change="selectCover" />
+              <button
+                class="group grid min-h-44 place-items-center overflow-hidden rounded-xl border border-dashed border-border bg-background/40 p-2 text-center transition hover:border-primary/50 hover:bg-primary/5"
+                type="button"
+                :disabled="busy"
+                @click="coverInput?.click()"
+              >
+                <img v-if="preview.coverUrl" :src="preview.coverUrl" alt="封面预览" class="size-full max-h-56 rounded-lg object-cover" />
+                <div v-else>
+                  <Image class="mx-auto size-8 text-primary" />
+                  <p class="mt-3 text-sm font-medium">选择封面图片</p>
+                  <p class="mt-1 text-xs text-muted-foreground">JPG / PNG / WebP，最大 10MB</p>
+                </div>
+              </button>
+              <Button v-if="form.cover" variant="ghost" size="sm" :disabled="busy" @click="clearFile('cover')">
+                <X class="size-4" />
+                移除封面
+              </Button>
+            </div>
+          </div>
+
+          <div v-if="busy || upload.percent > 0" class="rounded-xl border border-border bg-background/45 p-4">
+            <div class="mb-3 flex items-center justify-between gap-3 text-sm">
+              <span class="font-medium">{{ upload.stage }}</span>
+              <span class="font-mono text-muted-foreground">{{ upload.percent }}%</span>
+            </div>
+            <Progress :model-value="upload.percent" />
+            <div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+              <span>哈希 {{ upload.hashPercent }}%</span>
+              <span>分片 {{ upload.totalChunks }}</span>
+              <span>恢复 {{ upload.resumedChunks }}</span>
+              <span>重试 {{ upload.retryCount }}</span>
+            </div>
+          </div>
+
+          <Button size="lg" :disabled="busy" class="w-full" @click="publish">
+            <UploadCloud class="size-5" />
+            {{ busy ? upload.stage : '开始上传并发布' }}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <div class="grid content-start gap-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>本地预览</CardTitle>
+            <CardDescription>上传前确认视频和封面是否匹配。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div class="aspect-[9/14] overflow-hidden rounded-xl border border-border bg-black">
+              <video
+                v-if="preview.videoUrl"
+                class="size-full object-contain"
+                :src="preview.videoUrl"
+                :poster="preview.coverUrl"
+                controls
+                playsinline
+                preload="metadata"
+              />
+              <div v-else class="grid size-full place-items-center text-center text-sm text-muted-foreground">
+                <div>
+                  <FileVideo class="mx-auto mb-3 size-8" />
+                  尚未选择视频
+                </div>
               </div>
-              <div v-if="publishForm.cover" class="subtle" style="margin-top: 6px">已选择：{{ publishForm.cover.name }}</div>
             </div>
-          </div>
+          </CardContent>
+        </Card>
 
-          <!-- Upload progress bar -->
-          <div v-if="busy && uploadProgress.totalBytes > 0" class="progress-wrap">
-            <div class="progress-bar">
-              <div class="progress-fill" :style="{ width: uploadProgress.percent + '%' }"></div>
-            </div>
-            <div class="progress-text">
-              {{ (uploadProgress.uploadedBytes / 1024 / 1024).toFixed(1) }} MB /
-              {{ (uploadProgress.totalBytes / 1024 / 1024).toFixed(1) }} MB
-              ({{ uploadProgress.percent }}%)
-            </div>
-          </div>
-
-          <div v-if="preview.coverUrl || preview.videoUrl" class="grid two">
-            <div v-if="preview.videoUrl" class="preview-card">
-              <div class="subtle">视频预览</div>
-              <video class="video" :src="preview.videoUrl" controls playsinline preload="metadata" />
-            </div>
-            <div v-if="preview.coverUrl" class="preview-card">
-              <div class="subtle">封面预览</div>
-              <img class="cover" :src="preview.coverUrl" alt="cover preview" />
-            </div>
-          </div>
-
-          <div class="row" style="justify-content: flex-end; margin-top: 8px">
-            <button class="primary big-btn" type="button" :disabled="busy" @click="onPublish">发布</button>
-          </div>
-        </div>
-
-        <div v-if="published" class="card" style="margin-top: 14px">
-          <p class="title">已发布</p>
-          <div class="row" style="justify-content: space-between">
-            <div>
-              <div class="title" style="margin: 0">{{ published.title }}</div>
-              <div class="subtle mono">#{{ published.id }}</div>
-            </div>
-            <div class="row">
-              <RouterLink class="pill" :to="`/video/${published.id}`">去播放</RouterLink>
-              <a class="pill mono" :href="published.play_url" target="_blank" rel="noreferrer">play_url</a>
-              <a class="pill mono" :href="published.cover_url" target="_blank" rel="noreferrer">cover_url</a>
-            </div>
-          </div>
+        <div v-if="published" ref="successCard">
+          <Card class="border-emerald-500/30">
+            <CardHeader>
+              <span class="mb-2 grid size-10 place-items-center rounded-full bg-emerald-500/15 text-emerald-400">
+                <CheckCircle2 class="size-5" />
+              </span>
+              <CardTitle>发布成功</CardTitle>
+              <CardDescription>{{ published.title }}</CardDescription>
+            </CardHeader>
+            <CardContent class="grid gap-2">
+              <Button @click="router.push(`/video/${published.id}`)">查看视频</Button>
+              <Button variant="outline" @click="resetForm">继续发布</Button>
+            </CardContent>
+          </Card>
         </div>
       </div>
     </div>
   </AppShell>
 </template>
-
-<style scoped>
-.publish-wrap {
-  display: grid;
-  justify-items: center;
-}
-
-.publish-card {
-  width: min(980px, 100%);
-  padding: 22px;
-}
-
-.form-grid {
-  gap: 16px;
-}
-
-.form-grid .grid.two {
-  gap: 20px;
-}
-
-.form-grid .grid.two > * {
-  min-width: 0;
-}
-
-.form-grid input[type='file'] {
-  max-width: 100%;
-}
-
-.file-native {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-.file-box {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 14px;
-  min-height: 46px;
-}
-
-.file-box button {
-  padding: 8px 10px;
-  border-radius: 12px;
-}
-
-.file-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  color: rgba(255, 255, 255, 0.88);
-}
-
-.muted {
-  color: rgba(255, 255, 255, 0.55);
-}
-
-.big-input {
-  box-sizing: border-box;
-  width: 100%;
-  max-width: 100%;
-  padding: 12px 14px;
-  font-size: 14px;
-  border-radius: 14px;
-}
-
-.big-btn {
-  padding: 12px 18px;
-  font-size: 14px;
-  border-radius: 14px;
-}
-
-.preview-card {
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 16px;
-  padding: 12px;
-  display: grid;
-  gap: 10px;
-}
-
-.cover {
-  width: 100%;
-  aspect-ratio: 9/12;
-  object-fit: cover;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.35);
-}
-
-.video {
-  width: 100%;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.35);
-}
-
-.progress-wrap {
-  display: grid;
-  gap: 6px;
-}
-
-.progress-bar {
-  height: 8px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  background: #4a9eff;
-  border-radius: 4px;
-  transition: width 0.2s ease;
-}
-
-.progress-text {
-  font-size: 13px;
-  color: rgba(255, 255, 255, 0.7);
-}
-</style>
