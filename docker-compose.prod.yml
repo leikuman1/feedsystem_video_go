@@ -3,17 +3,15 @@ services:
     image: mysql:8.0
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
-      TZ: "Asia/Shanghai"
-    ports:
-      - "3307:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
+      TZ: Asia/Shanghai
     command:
       - --default-authentication-plugin=mysql_native_password
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
       interval: 5s
@@ -23,11 +21,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-123456}
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-123456}"]
-    ports:
-      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
     volumes:
       - redis_data:/data
     healthcheck:
@@ -39,12 +33,9 @@ services:
   rabbitmq:
     image: rabbitmq:3-management
     restart: always
-    ports:
-      - "5672:5672"
-      - "15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-admin}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-password123}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -58,11 +49,8 @@ services:
     restart: always
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
     volumes:
       - minio_data:/data
     healthcheck:
@@ -85,8 +73,8 @@ services:
         mc mb --ignore-existing "local/$${MINIO_BUCKET}" &&
         mc anonymous set none "local/$${MINIO_BUCKET}"
     environment:
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_BUCKET: ${MINIO_BUCKET:-feedsystem-media}
 
   backend:
@@ -97,26 +85,25 @@ services:
     restart: always
     environment:
       CONFIG_PATH: /app/configs/config.yaml
-      JWT_SECRET: ${JWT_SECRET:-feedsystem-dev-secret-key}
+      JWT_SECRET: ${JWT_SECRET}
+      MYSQL_HOST: mysql
       MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-123456}
-      RABBITMQ_USER: ${RABBITMQ_USER:-admin}
-      RABBITMQ_PASS: ${RABBITMQ_PASS:-password123}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASS: ${RABBITMQ_PASS}
       MINIO_ENDPOINT: minio:9000
-      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_PUBLIC_ENDPOINT: ${MEDIA_DOMAIN}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_BUCKET: ${MINIO_BUCKET:-feedsystem-media}
       MINIO_USE_SSL: "false"
-      MINIO_PUBLIC_USE_SSL: ${MINIO_PUBLIC_USE_SSL:-false}
-      ALLOW_PUBLIC_REGISTRATION: ${ALLOW_PUBLIC_REGISTRATION:-false}
-      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-}
-      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-}
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
+      MINIO_PUBLIC_USE_SSL: "true"
+      ALLOW_PUBLIC_REGISTRATION: "false"
+      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD}
     depends_on:
       mysql:
         condition: service_healthy
@@ -130,7 +117,7 @@ services:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
 
   worker:
     build:
@@ -140,14 +127,15 @@ services:
     restart: always
     environment:
       CONFIG_PATH: /app/configs/config.yaml
-      JWT_SECRET: ${JWT_SECRET:-feedsystem-dev-secret-key}
+      JWT_SECRET: ${JWT_SECRET}
+      MYSQL_HOST: mysql
       MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-123456}
-      RABBITMQ_USER: ${RABBITMQ_USER:-admin}
-      RABBITMQ_PASS: ${RABBITMQ_PASS:-password123}
-    volumes:
-      - ./backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASS: ${RABBITMQ_PASS}
     depends_on:
       mysql:
         condition: service_healthy
@@ -155,29 +143,52 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep worker || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
 
-  frontend:
+  gateway:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      target: production
     restart: always
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      MEDIA_DOMAIN: ${MEDIA_DOMAIN}
     ports:
-      - "5173:80"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certbot_www:/var/www/certbot:ro
+      - letsencrypt:/etc/letsencrypt:ro
     depends_on:
-      - backend
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      backend:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  gateway-bootstrap:
+    image: nginx:1.27-alpine
+    profiles: ["bootstrap"]
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      MEDIA_DOMAIN: ${MEDIA_DOMAIN}
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/bootstrap.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - certbot_www:/var/www/certbot:ro
+
+  certbot:
+    image: certbot/certbot:v4.0.0
+    volumes:
+      - certbot_www:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+    entrypoint: /bin/sh
+    command: -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $${!}; done"
 
 volumes:
   mysql_data:
   redis_data:
   rabbitmq_data:
   minio_data:
+  certbot_www:
+  letsencrypt:
