@@ -26,6 +26,7 @@ func SetRouter(
 	rmq *rabbitmq.RabbitMQ,
 	objectStore storage.ObjectStorage,
 	signedURLExpiry time.Duration,
+	allowPublicRegistration bool,
 ) *gin.Engine {
 	r := gin.Default()
 	if err := r.SetTrustedProxies(nil); err != nil {
@@ -50,11 +51,14 @@ func SetRouter(
 	accountHandler := account.NewAccountHandler(accountService, objectStore, signedURLExpiry)
 	accountGroup := r.Group("/account")
 	{
-		accountGroup.POST("/register", registerLimiter, accountHandler.CreateAccount)
+		if allowPublicRegistration {
+			accountGroup.POST("/register", registerLimiter, accountHandler.CreateAccount)
+		} else {
+			accountGroup.POST("/register", func(c *gin.Context) {
+				c.JSON(403, gin.H{"error": "public registration is disabled"})
+			})
+		}
 		accountGroup.POST("/login", loginLimiter, accountHandler.Login)
-		accountGroup.POST("/changePassword", accountHandler.ChangePassword)
-		accountGroup.POST("/findByID", accountHandler.FindByID)
-		accountGroup.POST("/findByUsername", accountHandler.FindByUsername)
 		accountGroup.POST("/refresh", accountHandler.Refresh)
 	}
 	protectedAccountGroup := accountGroup.Group("")
@@ -62,6 +66,9 @@ func SetRouter(
 	{
 		protectedAccountGroup.POST("/logout", accountHandler.Logout)
 		protectedAccountGroup.POST("/rename", accountHandler.Rename)
+		protectedAccountGroup.POST("/changePassword", accountHandler.ChangePassword)
+		protectedAccountGroup.POST("/findByID", accountHandler.FindByID)
+		protectedAccountGroup.POST("/findByUsername", accountHandler.FindByUsername)
 		protectedAccountGroup.POST("/uploadAvatar", accountHandler.UploadAvatar)
 		protectedAccountGroup.POST("/updateProfile", accountHandler.UpdateProfile)
 	}
@@ -76,21 +83,18 @@ func SetRouter(
 	videoHandler := video.NewVideoHandler(videoService, accountService, objectStore, signedURLExpiry)
 	chunkHandler := video.NewChunkUploadHandler(cache, objectStore, signedURLExpiry)
 	videoGroup := r.Group("/video")
+	videoGroup.Use(jwt.JWTAuth(accountRepository, cache))
 	{
 		videoGroup.POST("/listByAuthorID", videoHandler.ListByAuthorID)
 		videoGroup.POST("/getDetail", videoHandler.GetDetail)
-	}
-	protectedVideoGroup := videoGroup.Group("")
-	protectedVideoGroup.Use(jwt.JWTAuth(accountRepository, cache))
-	{
-		protectedVideoGroup.POST("/uploadVideo", videoHandler.UploadVideo)
-		protectedVideoGroup.POST("/uploadCover", videoHandler.UploadCover)
-		protectedVideoGroup.POST("/publish", videoHandler.PublishVideo)
-		protectedVideoGroup.POST("/chunk/init", chunkHandler.InitChunkUpload)
-		protectedVideoGroup.POST("/chunk/upload", chunkHandler.UploadChunk)
-		protectedVideoGroup.POST("/chunk/status", chunkHandler.ChunkStatus)
-		protectedVideoGroup.POST("/chunk/complete", chunkHandler.CompleteChunkUpload)
-		protectedVideoGroup.POST("/chunk/abort", chunkHandler.AbortChunkUpload)
+		videoGroup.POST("/uploadVideo", videoHandler.UploadVideo)
+		videoGroup.POST("/uploadCover", videoHandler.UploadCover)
+		videoGroup.POST("/publish", videoHandler.PublishVideo)
+		videoGroup.POST("/chunk/init", chunkHandler.InitChunkUpload)
+		videoGroup.POST("/chunk/upload", chunkHandler.UploadChunk)
+		videoGroup.POST("/chunk/status", chunkHandler.ChunkStatus)
+		videoGroup.POST("/chunk/complete", chunkHandler.CompleteChunkUpload)
+		videoGroup.POST("/chunk/abort", chunkHandler.AbortChunkUpload)
 	}
 	// like
 	likeMQ, err := rabbitmq.NewLikeMQ(rmq)
@@ -102,13 +106,12 @@ func SetRouter(
 	likeService := video.NewLikeService(likeRepository, videoRepository, cache, likeMQ, popularityMQ)
 	likeHandler := video.NewLikeHandler(likeService)
 	likeGroup := r.Group("/like")
-	protectedLikeGroup := likeGroup.Group("")
-	protectedLikeGroup.Use(jwt.JWTAuth(accountRepository, cache))
+	likeGroup.Use(jwt.JWTAuth(accountRepository, cache))
 	{
-		protectedLikeGroup.POST("/like", likeLimiter, likeHandler.Like)
-		protectedLikeGroup.POST("/unlike", likeLimiter, likeHandler.Unlike)
-		protectedLikeGroup.POST("/isLiked", likeHandler.IsLiked)
-		protectedLikeGroup.POST("/listMyLikedVideos", likeHandler.ListMyLikedVideos)
+		likeGroup.POST("/like", likeLimiter, likeHandler.Like)
+		likeGroup.POST("/unlike", likeLimiter, likeHandler.Unlike)
+		likeGroup.POST("/isLiked", likeHandler.IsLiked)
+		likeGroup.POST("/listMyLikedVideos", likeHandler.ListMyLikedVideos)
 	}
 	// comment
 	commentRepository := video.NewCommentRepository(db)
@@ -120,14 +123,11 @@ func SetRouter(
 	commentService := video.NewCommentService(commentRepository, videoRepository, cache, commentMQ, popularityMQ)
 	commentHandler := video.NewCommentHandler(commentService, accountService)
 	commentGroup := r.Group("/comment")
+	commentGroup.Use(jwt.JWTAuth(accountRepository, cache))
 	{
 		commentGroup.POST("/listAll", commentHandler.GetAllComments)
-	}
-	protectedCommentGroup := commentGroup.Group("")
-	protectedCommentGroup.Use(jwt.JWTAuth(accountRepository, cache))
-	{
-		protectedCommentGroup.POST("/publish", commentLimiter, commentHandler.PublishComment)
-		protectedCommentGroup.POST("/delete", commentLimiter, commentHandler.DeleteComment)
+		commentGroup.POST("/publish", commentLimiter, commentHandler.PublishComment)
+		commentGroup.POST("/delete", commentLimiter, commentHandler.DeleteComment)
 	}
 	// social
 	socialMQ, err := rabbitmq.NewSocialMQ(rmq)
@@ -139,17 +139,16 @@ func SetRouter(
 	socialService := social.NewSocialService(socialRepository, accountRepository, socialMQ, cache)
 	socialHandler := social.NewSocialHandler(socialService, mediaResolver)
 	socialGroup := r.Group("/social")
-	protectedSocialGroup := socialGroup.Group("")
-	protectedSocialGroup.Use(jwt.JWTAuth(accountRepository, cache))
+	socialGroup.Use(jwt.JWTAuth(accountRepository, cache))
 	{
-		protectedSocialGroup.POST("/follow", socialLimiter, socialHandler.Follow)
-		protectedSocialGroup.POST("/unfollow", socialLimiter, socialHandler.Unfollow)
-		protectedSocialGroup.POST("/getAllFollowers", socialHandler.GetAllFollowers)
-		protectedSocialGroup.POST("/getAllVloggers", socialHandler.GetAllVloggers)
-		protectedSocialGroup.POST("/getCounts", socialHandler.GetCounts)
+		socialGroup.POST("/follow", socialLimiter, socialHandler.Follow)
+		socialGroup.POST("/unfollow", socialLimiter, socialHandler.Unfollow)
+		socialGroup.POST("/getAllFollowers", socialHandler.GetAllFollowers)
+		socialGroup.POST("/getAllVloggers", socialHandler.GetAllVloggers)
+		socialGroup.POST("/getCounts", socialHandler.GetCounts)
 	}
 
-	accountGroup.POST("/getProfile", func(c *gin.Context) {
+	protectedAccountGroup.POST("/getProfile", func(c *gin.Context) {
 		var req account.GetProfileRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
@@ -185,28 +184,23 @@ func SetRouter(
 	feedService := feed.NewFeedService(feedRepository, likeRepository, cache, mediaResolver)
 	feedHandler := feed.NewFeedHandler(feedService)
 	feedGroup := r.Group("/feed")
-	feedGroup.Use(jwt.SoftJWTAuth(accountRepository, cache))
+	feedGroup.Use(jwt.JWTAuth(accountRepository, cache))
 	{
 		feedGroup.POST("/listLatest", feedHandler.ListLatest)
 		feedGroup.POST("/listLikesCount", feedHandler.ListLikesCount)
 		feedGroup.POST("/listByPopularity", feedHandler.ListByPopularity)
 		feedGroup.POST("/listByTag", feedHandler.ListByTag)
-	}
-	protectedFeedGroup := feedGroup.Group("")
-	protectedFeedGroup.Use(jwt.JWTAuth(accountRepository, cache))
-	{
-		protectedFeedGroup.POST("/listByFollowing", feedHandler.ListByFollowing)
+		feedGroup.POST("/listByFollowing", feedHandler.ListByFollowing)
 	}
 	// message
 	messageRepo := message.NewRepository(db)
 	messageService := message.NewService(messageRepo)
 	messageHandler := message.NewHandler(messageService)
 	messageGroup := r.Group("/message")
-	protectedMessageGroup := messageGroup.Group("")
-	protectedMessageGroup.Use(jwt.JWTAuth(accountRepository, cache))
+	messageGroup.Use(jwt.JWTAuth(accountRepository, cache))
 	{
-		protectedMessageGroup.POST("/send", messageHandler.Send)
-		protectedMessageGroup.POST("/list", messageHandler.List)
+		messageGroup.POST("/send", messageHandler.Send)
+		messageGroup.POST("/list", messageHandler.List)
 	}
 	//worker
 	timelineMQ, err := rabbitmq.NewTimelineMQ(rmq)
@@ -234,7 +228,7 @@ func SetRouter(
 	}
 	sseHub := worker.NewSSEHub(db)
 	notifGroup := r.Group("/notification")
-	notifGroup.Use(sseHub.SSERequireAuth())
+	notifGroup.Use(jwt.JWTAuth(accountRepository, cache))
 	sseHub.RegisterRoutes(r, notifGroup)
 
 	go func() {

@@ -18,19 +18,11 @@ import (
 // JWTAuth check jwt token and ensure it matches the currently stored token.
 func JWTAuth(accountRepo *account.AccountRepository, cache *rediscache.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
+		tokenString, err := requestToken(c)
+		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing authorization header"})
 			return
 		}
-
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header"})
-			return
-		}
-
-		tokenString := parts[1]
 
 		claims, err := auth.ParseToken(tokenString)
 		if err != nil {
@@ -68,7 +60,10 @@ func SoftJWTAuth(accountRepo *account.AccountRepository, cache *rediscache.Clien
 }
 
 func check(c *gin.Context, claims *auth.Claims, tokenString string, accountRepo *account.AccountRepository, cache *rediscache.Client) {
-	key := cache.Key("account:%d", claims.AccountID)
+	key := ""
+	if cache != nil {
+		key = cache.Key("account:%d", claims.AccountID)
+	}
 
 	// 先查 Redis
 	if cache != nil {
@@ -108,6 +103,23 @@ func check(c *gin.Context, claims *auth.Claims, tokenString string, accountRepo 
 	c.Set("username", claims.Username)
 	c.Next()
 
+}
+
+func requestToken(c *gin.Context) (string, error) {
+	authHeader := c.GetHeader("Authorization")
+	if authHeader != "" {
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
+			return "", errors.New("invalid authorization header")
+		}
+		return strings.TrimSpace(parts[1]), nil
+	}
+	if c.Request.Method == http.MethodGet {
+		if token := strings.TrimSpace(c.Query("token")); token != "" {
+			return token, nil
+		}
+	}
+	return "", errors.New("missing authorization header")
 }
 
 func GetAccountID(c *gin.Context) (uint, error) {

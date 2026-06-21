@@ -15,6 +15,7 @@ type Config struct {
 	Redis               RedisConfig         `yaml:"redis"`
 	RabbitMQ            RabbitMQConfig      `yaml:"rabbitmq"`
 	MinIO               MinIOConfig         `yaml:"minio"`
+	Demo                DemoConfig          `yaml:"demo"`
 	ObservabilityConfig ObservabilityConfig `yaml:"observability"`
 }
 
@@ -54,6 +55,12 @@ type MinIOConfig struct {
 	UseSSL                 bool   `yaml:"use_ssl"`
 	PublicUseSSL           bool   `yaml:"public_use_ssl"`
 	SignedURLExpirySeconds int    `yaml:"signed_url_expiry_seconds"`
+}
+
+type DemoConfig struct {
+	AllowPublicRegistration bool   `yaml:"allow_public_registration"`
+	BootstrapUsername       string `yaml:"bootstrap_username"`
+	BootstrapPassword       string `yaml:"bootstrap_password"`
 }
 
 func (c MinIOConfig) Validate() error {
@@ -194,6 +201,17 @@ func ApplyEnvOverrides(cfg *Config) {
 			cfg.MinIO.SignedURLExpirySeconds = seconds
 		}
 	}
+	if v := os.Getenv("ALLOW_PUBLIC_REGISTRATION"); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.Demo.AllowPublicRegistration = enabled
+		}
+	}
+	if v := os.Getenv("BOOTSTRAP_USERNAME"); v != "" {
+		cfg.Demo.BootstrapUsername = v
+	}
+	if v := os.Getenv("BOOTSTRAP_PASSWORD"); v != "" {
+		cfg.Demo.BootstrapPassword = v
+	}
 }
 
 // bool用来表示是否使用了默认配置，true表示使用了默认配置
@@ -242,6 +260,9 @@ func DefaultLocalConfig() Config {
 			UseSSL:                 false,
 			PublicUseSSL:           false,
 			SignedURLExpirySeconds: 7200,
+		},
+		Demo: DemoConfig{
+			AllowPublicRegistration: false,
 		},
 		ObservabilityConfig: ObservabilityConfig{
 			Pprof: PprofConfig{

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"feedsystem_video_go/internal/account"
 	"feedsystem_video_go/internal/config"
 	"feedsystem_video_go/internal/db"
 	apphttp "feedsystem_video_go/internal/http"
@@ -80,6 +81,22 @@ func main() {
 		}
 	}
 
+	bootstrapService := account.NewAccountService(account.NewAccountRepository(sqlDB), cache)
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	created, err := account.EnsureBootstrapAccount(
+		bootstrapCtx,
+		bootstrapService,
+		cfg.Demo.BootstrapUsername,
+		cfg.Demo.BootstrapPassword,
+	)
+	bootstrapCancel()
+	if err != nil {
+		log.Fatalf("Failed to initialize demo account: %v", err)
+	}
+	if created {
+		log.Printf("Demo account created: %s", cfg.Demo.BootstrapUsername)
+	}
+
 	// 连接 RabbitMQ (可选，用于消息队列)
 	rmq, err := rabbitmq.NewRabbitMQ(&cfg.RabbitMQ)
 	if err != nil {
@@ -104,7 +121,14 @@ func main() {
 
 	// 设置路由
 	signedURLExpiry := time.Duration(cfg.MinIO.SignedURLExpirySeconds) * time.Second
-	r := apphttp.SetRouter(sqlDB, cache, rmq, objectStore, signedURLExpiry)
+	r := apphttp.SetRouter(
+		sqlDB,
+		cache,
+		rmq,
+		objectStore,
+		signedURLExpiry,
+		cfg.Demo.AllowPublicRegistration,
+	)
 	log.Printf("Server is running on port %d", cfg.Server.Port)
 	if err := r.Run(":" + strconv.Itoa(cfg.Server.Port)); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
