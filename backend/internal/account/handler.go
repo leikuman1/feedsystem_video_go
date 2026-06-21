@@ -1,18 +1,15 @@
 package account
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
-	"fmt"
+	"mime"
 	"net/http"
-	"os"
-	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"time"
 
 	"feedsystem_video_go/internal/apierror"
+	"feedsystem_video_go/internal/storage"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -20,10 +17,20 @@ import (
 
 type AccountHandler struct {
 	accountService *AccountService
+	storage        storage.ObjectStorage
+	signedURLTTL   time.Duration
 }
 
-func NewAccountHandler(accountService *AccountService) *AccountHandler {
-	return &AccountHandler{accountService: accountService}
+func NewAccountHandler(
+	accountService *AccountService,
+	objectStore storage.ObjectStorage,
+	signedURLTTL time.Duration,
+) *AccountHandler {
+	return &AccountHandler{
+		accountService: accountService,
+		storage:        objectStore,
+		signedURLTTL:   signedURLTTL,
+	}
 }
 func (h *AccountHandler) CreateAccount(c *gin.Context) {
 	var req CreateAccountRequest
@@ -168,29 +175,38 @@ func (h *AccountHandler) UploadAvatar(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "only .jpg/.jpeg/.png/.webp allowed"})
 		return
 	}
-	dir := filepath.Join(".run", "uploads", "avatars", strconv.FormatUint(uint64(accountID), 10))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	filename, err := randHex(16)
+	key, err := storage.NewMediaObjectKey(storage.MediaAvatar, accountID, ext, time.Now())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate object key"})
 		return
 	}
-	filename = filename + ext
-	absPath := filepath.Join(dir, filename)
-	if err := c.SaveUploadedFile(f, absPath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+
+	file, err := f.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read upload"})
 		return
 	}
-	urlPath := path.Join("/static", "avatars", strconv.FormatUint(uint64(accountID), 10), filename)
-	avatarURL := buildAbsoluteURL(c, urlPath)
+	defer file.Close()
+
+	contentType := f.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = mime.TypeByExtension(ext)
+	}
+	if _, err := h.storage.PutObject(c.Request.Context(), key, file, f.Size, contentType); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to store avatar"})
+		return
+	}
+
+	avatarURL, err := h.storage.PresignedGetURL(c.Request.Context(), key, h.signedURLTTL)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create avatar URL"})
+		return
+	}
 	if err := h.accountService.UpdateAvatar(c.Request.Context(), accountID, avatarURL); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"avatar_url": avatarURL})
+	c.JSON(http.StatusOK, gin.H{"object_key": key, "avatar_url": avatarURL})
 }
 
 func (h *AccountHandler) UpdateProfile(c *gin.Context) {
@@ -223,25 +239,6 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, LoginResponse{Token: newToken, AccountID: accountID, Username: username})
-}
-
-func randHex(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("rand.Read: %w", err)
-	}
-	return hex.EncodeToString(b), nil
-}
-
-func buildAbsoluteURL(c *gin.Context, p string) string {
-	scheme := "http"
-	if c.Request.TLS != nil {
-		scheme = "https"
-	}
-	if xf := c.GetHeader("X-Forwarded-Proto"); xf != "" {
-		scheme = xf
-	}
-	return fmt.Sprintf("%s://%s%s", scheme, c.Request.Host, p)
 }
 
 func getAccountID(c *gin.Context) (uint, error) {

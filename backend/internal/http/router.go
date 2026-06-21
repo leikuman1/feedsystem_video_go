@@ -10,6 +10,7 @@ import (
 	"feedsystem_video_go/internal/middleware/ratelimit"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 	"feedsystem_video_go/internal/social"
+	"feedsystem_video_go/internal/storage"
 	"feedsystem_video_go/internal/video"
 	"feedsystem_video_go/internal/worker"
 	"log"
@@ -19,7 +20,13 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *gin.Engine {
+func SetRouter(
+	db *gorm.DB,
+	cache *rediscache.Client,
+	rmq *rabbitmq.RabbitMQ,
+	objectStore storage.ObjectStorage,
+	signedURLExpiry time.Duration,
+) *gin.Engine {
 	r := gin.Default()
 	if err := r.SetTrustedProxies(nil); err != nil {
 		log.Printf("SetTrustedProxies failed: %v", err)
@@ -39,7 +46,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 	// account
 	accountRepository := account.NewAccountRepository(db)
 	accountService := account.NewAccountService(accountRepository, cache)
-	accountHandler := account.NewAccountHandler(accountService)
+	accountHandler := account.NewAccountHandler(accountService, objectStore, signedURLExpiry)
 	accountGroup := r.Group("/account")
 	{
 		accountGroup.POST("/register", registerLimiter, accountHandler.CreateAccount)
@@ -65,7 +72,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 		popularityMQ = nil
 	}
 	videoService := video.NewVideoService(videoRepository, cache, popularityMQ)
-	videoHandler := video.NewVideoHandler(videoService, accountService)
+	videoHandler := video.NewVideoHandler(videoService, accountService, objectStore, signedURLExpiry)
 	chunkHandler := video.NewChunkUploadHandler(cache)
 	videoGroup := r.Group("/video")
 	{

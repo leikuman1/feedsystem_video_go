@@ -4,9 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"mime"
 	"net/http"
-	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"feedsystem_video_go/internal/account"
 	"feedsystem_video_go/internal/apierror"
 	"feedsystem_video_go/internal/middleware/jwt"
+	"feedsystem_video_go/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,10 +21,22 @@ import (
 type VideoHandler struct {
 	service        *VideoService
 	accountService *account.AccountService
+	storage        storage.ObjectStorage
+	signedURLTTL   time.Duration
 }
 
-func NewVideoHandler(service *VideoService, accountService *account.AccountService) *VideoHandler {
-	return &VideoHandler{service: service, accountService: accountService}
+func NewVideoHandler(
+	service *VideoService,
+	accountService *account.AccountService,
+	objectStore storage.ObjectStorage,
+	signedURLTTL time.Duration,
+) *VideoHandler {
+	return &VideoHandler{
+		service:        service,
+		accountService: accountService,
+		storage:        objectStore,
+		signedURLTTL:   signedURLTTL,
+	}
 }
 
 func (vh *VideoHandler) PublishVideo(c *gin.Context) {
@@ -85,33 +97,38 @@ func (vh *VideoHandler) UploadVideo(c *gin.Context) {
 		return
 	}
 
-	date := time.Now().Format("20060102")
-	relDir := filepath.Join("videos", fmt.Sprintf("%d", authorId), date)
-	root := filepath.Join(".run", "uploads")
-	absDir := filepath.Join(root, relDir)
-	if err := os.MkdirAll(absDir, 0o755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	filename, err := randHex(16)
+	key, err := storage.NewMediaObjectKey(storage.MediaVideo, authorId, ext, time.Now())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate filename"})
-		return
-	}
-	filename = filename + ext
-	absPath := filepath.Join(absDir, filename)
-
-	if err := c.SaveUploadedFile(f, absPath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate object key"})
 		return
 	}
 
-	urlPath := path.Join("/static", "videos", fmt.Sprintf("%d", authorId), date, filename)
+	file, err := f.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read upload"})
+		return
+	}
+	defer file.Close()
+
+	contentType := f.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = mime.TypeByExtension(ext)
+	}
+	if _, err := vh.storage.PutObject(c.Request.Context(), key, file, f.Size, contentType); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to store video"})
+		return
+	}
+
+	signedURL, err := vh.storage.PresignedGetURL(c.Request.Context(), key, vh.signedURLTTL)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create video URL"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"url":      buildAbsoluteURL(c, urlPath),
-		"play_url": buildAbsoluteURL(c, urlPath),
+		"object_key": key,
+		"url":        signedURL,
+		"play_url":   signedURL,
 	})
 }
 
@@ -142,33 +159,38 @@ func (vh *VideoHandler) UploadCover(c *gin.Context) {
 		return
 	}
 
-	date := time.Now().Format("20060102")
-	relDir := filepath.Join("covers", fmt.Sprintf("%d", authorId), date)
-	root := filepath.Join(".run", "uploads")
-	absDir := filepath.Join(root, relDir)
-	if err := os.MkdirAll(absDir, 0o755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	filename, err := randHex(16)
+	key, err := storage.NewMediaObjectKey(storage.MediaCover, authorId, ext, time.Now())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate filename"})
-		return
-	}
-	filename = filename + ext
-	absPath := filepath.Join(absDir, filename)
-
-	if err := c.SaveUploadedFile(f, absPath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate object key"})
 		return
 	}
 
-	urlPath := path.Join("/static", "covers", fmt.Sprintf("%d", authorId), date, filename)
+	file, err := f.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read upload"})
+		return
+	}
+	defer file.Close()
+
+	contentType := f.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = mime.TypeByExtension(ext)
+	}
+	if _, err := vh.storage.PutObject(c.Request.Context(), key, file, f.Size, contentType); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to store cover"})
+		return
+	}
+
+	signedURL, err := vh.storage.PresignedGetURL(c.Request.Context(), key, vh.signedURLTTL)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create cover URL"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"url":       buildAbsoluteURL(c, urlPath),
-		"cover_url": buildAbsoluteURL(c, urlPath),
+		"object_key": key,
+		"url":        signedURL,
+		"cover_url":  signedURL,
 	})
 }
 

@@ -8,6 +8,7 @@ import (
 	rabbitmq "feedsystem_video_go/internal/middleware/rabbitmq"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
 	"feedsystem_video_go/internal/observability"
+	"feedsystem_video_go/internal/storage"
 	"log"
 	"os"
 	"strconv"
@@ -37,6 +38,18 @@ func main() {
 	} else {
 		log.Printf("Config loaded from file: %s", configPath)
 	}
+
+	objectStore, err := storage.NewMinIOStorage(cfg.MinIO)
+	if err != nil {
+		log.Fatalf("Failed to initialize MinIO: %v", err)
+	}
+	storageCtx, storageCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := objectStore.EnsureReady(storageCtx); err != nil {
+		storageCancel()
+		log.Fatalf("MinIO is not ready: %v", err)
+	}
+	storageCancel()
+	log.Printf("MinIO connected (bucket=%s)", cfg.MinIO.Bucket)
 
 	// 连接数据库
 	//log.Printf("Database config: %v", cfg.Database)
@@ -90,7 +103,8 @@ func main() {
 	}
 
 	// 设置路由
-	r := apphttp.SetRouter(sqlDB, cache, rmq)
+	signedURLExpiry := time.Duration(cfg.MinIO.SignedURLExpirySeconds) * time.Second
+	r := apphttp.SetRouter(sqlDB, cache, rmq, objectStore, signedURLExpiry)
 	log.Printf("Server is running on port %d", cfg.Server.Port)
 	if err := r.Run(":" + strconv.Itoa(cfg.Server.Port)); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
