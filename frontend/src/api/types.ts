@@ -13,6 +13,17 @@ export type ListMessagesResponse = {
   messages: DirectMessage[]
 }
 
+export type Notification = {
+  id: number
+  recipient_id: number
+  sender_id: number
+  type: 'like' | 'comment' | 'follow' | string
+  target_id: number
+  content: string
+  is_read: boolean
+  created_at: string
+}
+
 export type TokenResponse = { token: string; refresh_token?: string; account_id?: number; username?: string }
 
 export type Account = {
@@ -95,8 +106,10 @@ export type IsLikedResponse = {
 
 export type GetAllFollowersResponse = {
   followers: Account[]
+  follower_count: number
 }
 
 export type GetAllVloggersResponse = {
   vloggers: Account[]
+  vlogger_count: number
 }

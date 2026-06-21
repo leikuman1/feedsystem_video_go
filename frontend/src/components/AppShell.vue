@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   Clapperboard,
   Compass,
+  Bell,
   Flame,
   LogOut,
   Menu,
@@ -37,6 +38,7 @@ const navItems = [
   { to: '/video', label: '发布', icon: Upload },
   { to: '/account', label: '我的', icon: UserRound },
   { to: '/messages', label: '私信', icon: MessageCircle },
+  { to: '/notifications', label: '通知', icon: Bell },
   { to: '/settings', label: '设置', icon: Settings },
 ]
 

@@ -1,168 +1,142 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { Camera, LogOut, Save, ShieldCheck, UserRound } from '@lucide/vue'
 
-import AppShell from '../components/AppShell.vue'
-import UserAvatar from '../components/UserAvatar.vue'
-import { ApiError } from '../api/client'
-import * as accountApi from '../api/account'
-import { useAuthStore } from '../stores/auth'
-import { useToastStore } from '../stores/toast'
+import { ApiError } from '@/api/client'
+import * as accountApi from '@/api/account'
+import type { Account } from '@/api/types'
+import AppShell from '@/components/AppShell.vue'
+import UserAvatar from '@/components/UserAvatar.vue'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { useAuthStore } from '@/stores/auth'
+import { useToastStore } from '@/stores/toast'
 
-const router = useRouter()
 const auth = useAuthStore()
 const toast = useToastStore()
-
+const router = useRouter()
 const busy = ref(false)
+const avatarInput = ref<HTMLInputElement | null>(null)
+const profile = ref<Account | null>(null)
+const accountId = computed(() => auth.claims?.account_id ?? 0)
+const form = reactive({ username: '', bio: '' })
 
-const me = computed(() => ({
-  id: auth.claims?.account_id ?? 0,
-  username: auth.claims?.username ?? '',
-}))
-
-const rename = reactive({
-  open: false,
-  newUsername: '',
-})
-
-async function openRename() {
-  if (!auth.isLoggedIn) return
-  rename.open = true
-  rename.newUsername = me.value.username
-  await nextTick()
+async function load() {
+  if (!accountId.value) return
+  try {
+    profile.value = await accountApi.findById(accountId.value)
+    form.username = profile.value.username
+    form.bio = profile.value.bio ?? ''
+  } catch (error) {
+    toast.error(error instanceof ApiError ? error.message : String(error))
+  }
 }
 
-async function submitRename() {
-  if (!auth.isLoggedIn) return
+async function saveProfile() {
   if (busy.value) return
-  const newUsername = rename.newUsername.trim()
-  if (!newUsername) {
-    toast.error('请输入新用户名')
-    return
-  }
-
   busy.value = true
   try {
-    const res = await accountApi.rename(newUsername)
-    auth.setToken(res.token)
-    rename.open = false
-    toast.success('改名成功（已刷新 token）')
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : String(e)
-    toast.error(msg)
+    const username = form.username.trim()
+    if (username && username !== profile.value?.username) {
+      const response = await accountApi.rename(username)
+      auth.setToken(response.token)
+    }
+    if (form.bio.trim()) await accountApi.updateProfile({ bio: form.bio.trim() })
+    toast.success('资料已更新')
+    await load()
+  } catch (error) {
+    toast.error(error instanceof ApiError ? error.message : String(error))
   } finally {
     busy.value = false
   }
 }
 
-async function goLogin() {
-  await router.push('/account')
-}
-
-async function goChangePassword() {
-  await router.push('/account/change-password')
-}
-
-async function onLogout() {
-  if (!auth.isLoggedIn) return
-  if (busy.value) return
-  if (!window.confirm('确认退出登录？')) return
-
+async function uploadAvatar(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
   busy.value = true
+  try {
+    const response = await accountApi.uploadAvatar(file)
+    if (profile.value) profile.value.avatar_url = response.avatar_url
+    toast.success('头像已更新')
+  } catch (error) {
+    toast.error(error instanceof ApiError ? error.message : String(error))
+  } finally {
+    busy.value = false
+    input.value = ''
+  }
+}
+
+async function logout() {
   try {
     await accountApi.logout()
-  } catch (e) {
-    const msg = e instanceof ApiError ? e.message : String(e)
-    toast.error(`登出失败：${msg}`)
-  } finally {
-    auth.clearTokens()
-    rename.open = false
-    toast.info('已退出登录')
-    busy.value = false
-    await router.push('/')
+  } catch {
+    // Local session still needs to be cleared.
   }
+  auth.clearTokens()
+  await router.replace('/login')
 }
+
+onMounted(load)
 </script>
 
 <template>
   <AppShell>
-    <div v-if="!auth.isLoggedIn" class="grid two">
-      <div class="card">
-        <p class="title">设置</p>
-        <p class="subtle">需要先登录后才能进行改名/退出等操作。</p>
-        <div class="row" style="margin-top: 12px; justify-content: flex-end">
-          <button class="primary" type="button" @click="goLogin">去登录</button>
-        </div>
-      </div>
-      <div class="card">
-        <p class="title">提示</p>
-        <p class="muted">登录入口在「账号」页。</p>
-      </div>
-    </div>
-
-    <div v-else class="grid two">
-      <div class="card">
-        <div class="row" style="justify-content: space-between; align-items: flex-start">
-          <div class="row" style="gap: 12px; align-items: center">
-            <UserAvatar :username="me.username" :id="me.id" :size="56" />
+    <div class="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[1fr_20rem]">
+      <Card>
+        <CardHeader>
+          <span class="mb-2 grid size-11 place-items-center rounded-xl bg-primary/15 text-primary"><UserRound class="size-5" /></span>
+          <CardTitle class="text-2xl">个人资料</CardTitle>
+          <CardDescription>头像文件存储在 MinIO，数据库只保存稳定 object key。</CardDescription>
+        </CardHeader>
+        <CardContent class="grid gap-6">
+          <div class="flex items-center gap-4 rounded-xl border border-border bg-background/40 p-4">
+            <UserAvatar :username="profile?.username ?? form.username" :id="accountId" :src="profile?.avatar_url" :size="72" />
             <div>
-              <div class="title" style="margin: 0">@{{ me.username }}</div>
-              <div class="subtle mono">#{{ me.id }}</div>
+              <input ref="avatarInput" class="hidden" type="file" accept="image/jpeg,image/png,image/webp" @change="uploadAvatar" />
+              <Button variant="outline" :disabled="busy" @click="avatarInput?.click()">
+                <Camera class="size-4" />
+                更换头像
+              </Button>
+              <p class="mt-2 text-xs text-muted-foreground">JPG、PNG 或 WebP，最大 10MB。</p>
             </div>
           </div>
-        </div>
 
-        <div class="card" style="margin-top: 14px">
-          <div class="row" style="justify-content: space-between; align-items: center">
-            <p class="title" style="margin: 0">账号设置</p>
-            <button class="ghost" type="button" :disabled="busy" @click="openRename">改名</button>
-          </div>
+          <label class="grid gap-2 text-sm">
+            <span class="text-muted-foreground">用户名</span>
+            <Input v-model="form.username" :disabled="busy" />
+          </label>
+          <label class="grid gap-2 text-sm">
+            <span class="text-muted-foreground">个人简介</span>
+            <Textarea v-model="form.bio" :disabled="busy" placeholder="介绍一下这个演示账号…" />
+          </label>
+          <Button :disabled="busy" @click="saveProfile">
+            <Save class="size-4" />
+            {{ busy ? '保存中…' : '保存修改' }}
+          </Button>
+        </CardContent>
+      </Card>
 
-          <div v-if="rename.open" class="grid" style="margin-top: 12px">
-            <div>
-              <label>new_username</label>
-              <input v-model.trim="rename.newUsername" @keydown.enter="submitRename" />
-            </div>
-            <div class="row" style="justify-content: flex-end">
-              <button type="button" :disabled="busy" @click="rename.open = false">取消</button>
-              <button class="primary" type="button" :disabled="busy" @click="submitRename">提交</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-top: 14px">
-          <p class="title">账号安全</p>
-          <div class="row">
-            <button class="ghost" type="button" :disabled="busy" @click="goChangePassword">修改密码</button>
-            <button class="danger" type="button" :disabled="busy" @click="onLogout">退出登录</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <p class="title">说明</p>
-        <div class="grid" style="margin-top: 10px">
-          <div class="pill ok">改名后会返回新 token，旧 token 立即失效</div>
-          <div class="pill ok">退出登录会清空本地 token</div>
-          <div class="pill">修改密码无需登录，但成功后会让旧 token 失效</div>
-        </div>
+      <div class="grid content-start gap-6">
+        <Card>
+          <CardHeader>
+            <ShieldCheck class="mb-2 size-5 text-primary" />
+            <CardTitle>账号安全</CardTitle>
+            <CardDescription>修改密码会撤销当前 Token。</CardDescription>
+          </CardHeader>
+          <CardContent class="grid gap-2">
+            <Button variant="outline" @click="router.push('/account/change-password')">修改密码</Button>
+            <Button variant="destructive" @click="logout">
+              <LogOut class="size-4" />
+              退出登录
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     </div>
   </AppShell>
 </template>
-
-<style scoped>
-.ghost {
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(0, 0, 0, 0.18);
-  color: rgba(255, 255, 255, 0.86);
-  border-radius: 12px;
-  padding: 10px 12px;
-  cursor: pointer;
-}
-
-.ghost:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-</style>
-

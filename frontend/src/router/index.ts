@@ -8,6 +8,7 @@ import HomeView from '@/views/HomeView.vue'
 import HotView from '@/views/HotView.vue'
 import LoginView from '@/views/LoginView.vue'
 import MessageView from '@/views/MessageView.vue'
+import NotificationView from '@/views/NotificationView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import UserProfileView from '@/views/UserProfileView.vue'
 import VideoDetailView from '@/views/VideoDetailView.vue'
@@ -28,6 +29,7 @@ const router = createRouter({
     { path: '/u/:id', name: 'user-profile', component: UserProfileView, props: true },
     { path: '/messages', name: 'message-list', component: MessageView },
     { path: '/messages/:peerId', name: 'messages', component: MessageView },
+    { path: '/notifications', name: 'notifications', component: NotificationView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

@@ -1,89 +1,39 @@
 <script setup lang="ts">
-import type { FeedVideoItem } from '../api/types'
+import { Heart, Play } from '@lucide/vue'
+import type { FeedVideoItem } from '@/api/types'
+import { Button } from '@/components/ui/button'
 
-const props = defineProps<{
-  item: FeedVideoItem
-  canLike: boolean
-  busy?: boolean
-}>()
-
-const emit = defineEmits<{
-  (e: 'toggle-like', item: FeedVideoItem): void
-}>()
-
-function onToggle() {
-  emit('toggle-like', props.item)
-}
+defineProps<{ item: FeedVideoItem; canLike: boolean; busy?: boolean }>()
+const emit = defineEmits<{ (event: 'toggle-like', item: FeedVideoItem): void }>()
 </script>
 
 <template>
-  <div class="feed-card">
-    <div class="cover">
-      <img :src="item.cover_url" :alt="item.title" loading="lazy" />
-    </div>
-    <div class="content">
-      <div class="row" style="justify-content: space-between">
-        <div>
-          <div class="title">
-            <RouterLink :to="`/video/${item.id}`">{{ item.title }}</RouterLink>
-          </div>
-          <div class="subtle">
-            作者：{{ item.author.username }} (#{{ item.author.id }}) · 创建时间：{{ new Date(item.create_time * 1000).toLocaleString() }}
-          </div>
-        </div>
-        <div class="row">
-          <span class="pill mono">❤️ {{ item.likes_count }}</span>
-          <button
-            v-if="canLike"
-            class="primary"
-            type="button"
-            :disabled="busy"
-            @click="onToggle"
-            :title="item.is_liked ? '取消点赞' : '点赞'"
-          >
-            {{ item.is_liked ? '已赞' : '点赞' }}
-          </button>
-        </div>
+  <article class="group grid overflow-hidden rounded-xl border border-border bg-card md:grid-cols-[13rem_1fr]">
+    <RouterLink :to="`/video/${item.id}`" class="relative aspect-video overflow-hidden bg-black md:aspect-auto">
+      <img :src="item.cover_url" :alt="item.title" class="size-full object-cover transition duration-300 group-hover:scale-105" loading="lazy" />
+      <span class="absolute inset-0 grid place-items-center bg-black/15 opacity-0 transition group-hover:opacity-100">
+        <span class="grid size-11 place-items-center rounded-full bg-black/65 text-white"><Play class="size-5 fill-current" /></span>
+      </span>
+    </RouterLink>
+    <div class="flex min-w-0 flex-col justify-between gap-4 p-4">
+      <div>
+        <RouterLink :to="`/video/${item.id}`" class="line-clamp-2 font-semibold hover:text-primary">{{ item.title }}</RouterLink>
+        <p class="mt-2 text-sm text-muted-foreground">@{{ item.author.username }}</p>
+        <p v-if="item.description" class="mt-3 line-clamp-2 text-sm leading-6 text-foreground/70">{{ item.description }}</p>
       </div>
-      <div v-if="item.description" class="muted" style="margin-top: 8px">{{ item.description }}</div>
-      <div class="row" style="margin-top: 10px">
-        <a class="pill mono" :href="item.play_url" target="_blank" rel="noreferrer">播放地址</a>
-        <RouterLink class="pill" :to="`/video/${item.id}`">查看详情 / 评论</RouterLink>
+      <div class="flex items-center justify-between gap-3">
+        <span class="text-xs text-muted-foreground">{{ new Date(item.create_time * 1000).toLocaleDateString() }}</span>
+        <Button
+          v-if="canLike"
+          :variant="item.is_liked ? 'default' : 'outline'"
+          size="sm"
+          :disabled="busy"
+          @click="emit('toggle-like', item)"
+        >
+          <Heart class="size-4" :class="item.is_liked ? 'fill-current' : ''" />
+          {{ item.likes_count }}
+        </Button>
       </div>
     </div>
-  </div>
+  </article>
 </template>
-
-<style scoped>
-.feed-card {
-  display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  gap: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 16px;
-  overflow: hidden;
-}
-
-.cover {
-  background: rgba(0, 0, 0, 0.25);
-  aspect-ratio: 16/9;
-}
-
-.cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.content {
-  padding: 12px 12px 14px;
-}
-
-@media (max-width: 900px) {
-  .feed-card {
-    grid-template-columns: 1fr;
-  }
-}
-</style>
