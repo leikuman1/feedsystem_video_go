@@ -1,363 +1,160 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
+import {
+  Clapperboard,
+  Compass,
+  Flame,
+  LogOut,
+  Menu,
+  MessageCircle,
+  Search,
+  Settings,
+  Upload,
+  UserRound,
+} from '@lucide/vue'
 
-import { useAuthStore } from '../stores/auth'
-import { useSocialStore } from '../stores/social'
-import Toaster from './Toaster.vue'
+import * as accountApi from '@/api/account'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
+import { useAuthStore } from '@/stores/auth'
+import { useSocialStore } from '@/stores/social'
+import { useToastStore } from '@/stores/toast'
 
-const props = defineProps<{ full?: boolean }>()
+defineProps<{ full?: boolean }>()
 
 const auth = useAuthStore()
 const social = useSocialStore()
+const toast = useToastStore()
 const router = useRouter()
 const route = useRoute()
-
 const search = ref(typeof route.query.q === 'string' ? route.query.q : '')
+
+const navItems = [
+  { to: '/', label: '发现', icon: Compass },
+  { to: '/hot', label: '热榜', icon: Flame },
+  { to: '/video', label: '发布', icon: Upload },
+  { to: '/account', label: '我的', icon: UserRound },
+  { to: '/messages', label: '私信', icon: MessageCircle },
+  { to: '/settings', label: '设置', icon: Settings },
+]
+
+const userLabel = computed(() => auth.claims?.username ?? '演示账号')
+
 watch(
   () => route.query.q,
-  (v) => {
-    search.value = typeof v === 'string' ? v : ''
+  (value) => {
+    search.value = typeof value === 'string' ? value : ''
   },
 )
 
 watch(
   () => auth.isLoggedIn,
-  (v) => {
-    if (v) void social.refreshMine()
+  (loggedIn) => {
+    if (loggedIn) void social.refreshMine()
     else social.clear()
   },
   { immediate: true },
 )
 
-const userLabel = computed(() => {
-  if (!auth.isLoggedIn) return '未登录'
-  const username = auth.claims?.username ?? '(unknown)'
-  const accountId = auth.claims?.account_id
-  return accountId ? `${username} #${accountId}` : username
-})
-
 async function onSearch() {
-  const q = search.value.trim()
-  await router.push({ path: '/', query: q ? { q } : {} })
+  const query = search.value.trim()
+  await router.push({ path: '/', query: query ? { q: query } : {} })
 }
 
-async function goLogin() {
-  await router.push('/account')
-}
-
-async function goSettings() {
-  await router.push('/settings')
+async function logout() {
+  try {
+    await accountApi.logout()
+  } catch {
+    // Token may already be invalid; local logout must still complete.
+  }
+  auth.clearTokens()
+  social.clear()
+  toast.info('已退出演示系统')
+  await router.replace('/login')
 }
 </script>
 
 <template>
-  <div class="dy-shell">
-    <aside class="dy-aside">
-      <RouterLink class="dy-logo" to="/">ShortVideo</RouterLink>
+  <div class="min-h-screen bg-background text-foreground">
+    <aside class="fixed inset-y-0 left-0 z-40 hidden w-64 border-r border-border bg-card/90 p-4 backdrop-blur-xl lg:flex lg:flex-col">
+      <RouterLink to="/" class="mb-8 flex items-center gap-3 px-2">
+        <span class="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
+          <Clapperboard class="size-5" />
+        </span>
+        <span>
+          <span class="block text-sm font-semibold">FrameFlow</span>
+          <span class="block text-xs text-muted-foreground">Video Feed System</span>
+        </span>
+      </RouterLink>
 
-      <nav class="dy-nav">
-        <RouterLink class="dy-nav-link" to="/">推荐</RouterLink>
-        <RouterLink class="dy-nav-link" to="/hot">热榜</RouterLink>
-        <RouterLink class="dy-nav-link" to="/video">发布</RouterLink>
-        <RouterLink class="dy-nav-link" to="/account">账号</RouterLink>
-        <RouterLink v-if="auth.isLoggedIn" class="dy-nav-link" to="/messages">私信</RouterLink>
-        <RouterLink class="dy-nav-link" to="/settings">设置</RouterLink>
+      <nav class="grid gap-1">
+        <RouterLink
+          v-for="item in navItems"
+          :key="item.to"
+          :to="item.to"
+          class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          active-class="bg-accent text-foreground"
+        >
+          <component :is="item.icon" class="size-4" />
+          {{ item.label }}
+        </RouterLink>
       </nav>
 
-      <div class="dy-aside-foot">
-        <div class="dy-user">
-          <span class="dy-user-dot" :class="auth.isLoggedIn ? 'ok' : 'bad'" />
-          <span class="dy-user-name">{{ userLabel }}</span>
+      <div class="mt-auto rounded-xl border border-border bg-background/50 p-3">
+        <div class="mb-3 min-w-0">
+          <p class="truncate text-sm font-medium">@{{ userLabel }}</p>
+          <p class="text-xs text-muted-foreground">Private interview demo</p>
         </div>
-        <div class="dy-user-actions">
-          <button v-if="!auth.isLoggedIn" class="dy-btn dy-btn-primary" type="button" @click="goLogin">登录</button>
-          <button v-else class="dy-btn dy-btn-primary" type="button" @click="goSettings">设置</button>
-        </div>
+        <Button variant="outline" size="sm" class="w-full" @click="logout">
+          <LogOut class="size-4" />
+          退出登录
+        </Button>
       </div>
     </aside>
 
-    <div class="dy-main">
-      <header class="dy-topbar">
-        <div class="dy-top-left">
-          <div class="dy-tabs-hint">{{ route.name }}</div>
-        </div>
+    <div class="lg:pl-64">
+      <header class="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur-xl md:px-6">
+        <Sheet>
+          <SheetTrigger as-child>
+            <Button variant="ghost" size="icon" class="lg:hidden">
+              <Menu class="size-5" />
+            </Button>
+          </SheetTrigger>
+          <SheetContent side="left" class="pt-16">
+            <nav class="grid gap-2">
+              <RouterLink
+                v-for="item in navItems"
+                :key="item.to"
+                :to="item.to"
+                class="flex items-center gap-3 rounded-lg px-3 py-3 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                active-class="bg-accent text-foreground"
+              >
+                <component :is="item.icon" class="size-4" />
+                {{ item.label }}
+              </RouterLink>
+            </nav>
+          </SheetContent>
+        </Sheet>
 
-        <div class="dy-search">
-          <input v-model="search" class="dy-search-input" placeholder="搜索标题 / 作者（本地过滤）" @keydown.enter="onSearch" />
-          <button class="dy-btn dy-btn-primary" type="button" @click="onSearch">搜索</button>
-        </div>
+        <form class="mx-auto flex w-full max-w-xl items-center gap-2" @submit.prevent="onSearch">
+          <div class="relative flex-1">
+            <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input v-model="search" class="pl-9" placeholder="搜索标题或作者" />
+          </div>
+          <Button variant="secondary" type="submit">搜索</Button>
+        </form>
 
-        <div class="dy-top-right">
-          <RouterLink class="dy-btn dy-btn-ghost" to="/video">+ 发布视频</RouterLink>
-        </div>
+        <Button class="hidden sm:inline-flex" @click="router.push('/video')">
+          <Upload class="size-4" />
+          发布
+        </Button>
       </header>
 
-      <nav class="dy-mobile-nav">
-        <RouterLink class="dy-mobile-link" to="/">推荐</RouterLink>
-        <RouterLink class="dy-mobile-link" to="/hot">热榜</RouterLink>
-        <RouterLink class="dy-mobile-link" to="/video">发布</RouterLink>
-        <RouterLink v-if="auth.isLoggedIn" class="dy-mobile-link" to="/messages">私信</RouterLink>
-        <RouterLink class="dy-mobile-link" to="/account">账号</RouterLink>
-      </nav>
-
-      <div class="dy-content" :class="props.full ? 'full' : 'padded'">
-        <template v-if="props.full">
-          <slot />
-        </template>
-        <template v-else>
-          <div class="container">
-            <slot />
-          </div>
-        </template>
-      </div>
+      <main :class="$props.full ? 'h-[calc(100vh-4rem)] overflow-hidden' : 'min-h-[calc(100vh-4rem)] p-4 md:p-6'">
+        <slot />
+      </main>
     </div>
-
-    <Toaster />
   </div>
 </template>
-
-<style scoped>
-.dy-shell {
-  height: 100vh;
-  display: grid;
-  grid-template-columns: 232px 1fr;
-  background: transparent;
-}
-
-.dy-aside {
-  border-right: 1px solid var(--border);
-  background: rgba(12, 16, 23, 0.78);
-  backdrop-filter: blur(18px);
-  padding: 14px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.dy-logo {
-  font-weight: 900;
-  letter-spacing: 0;
-  font-size: 18px;
-  padding: 10px 10px;
-  border-radius: 8px;
-  background: rgba(43, 161, 255, 0.1);
-  border: 1px solid rgba(43, 161, 255, 0.22);
-  text-decoration: none;
-}
-
-.dy-nav {
-  display: grid;
-  gap: 8px;
-}
-
-.dy-nav-link {
-  padding: 10px 10px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(246, 248, 251, 0.86);
-  text-decoration: none;
-}
-
-.dy-nav-link.router-link-active {
-  border-color: rgba(43, 161, 255, 0.42);
-  background: rgba(43, 161, 255, 0.14);
-  color: rgba(246, 248, 251, 0.96);
-}
-
-.dy-aside-foot {
-  margin-top: auto;
-  display: grid;
-  gap: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-
-.dy-user {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.dy-user-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.25);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06);
-}
-
-.dy-user-dot.ok {
-  background: rgba(34, 197, 94, 1);
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);
-}
-
-.dy-user-dot.bad {
-  background: rgba(255, 93, 115, 1);
-  box-shadow: 0 0 0 3px rgba(255, 93, 115, 0.14);
-}
-
-.dy-user-name {
-  font-size: 13px;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dy-user-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.dy-btn {
-  appearance: none;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-  border-radius: 8px;
-  padding: 10px 12px;
-  cursor: pointer;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: center;
-  font-size: 13px;
-}
-
-.dy-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.dy-btn-primary {
-  border-color: rgba(43, 161, 255, 0.5);
-  background: rgba(43, 161, 255, 0.16);
-}
-
-.dy-btn-primary:hover {
-  background: rgba(43, 161, 255, 0.24);
-}
-
-.dy-btn-ghost {
-  border-color: var(--border);
-  background: rgba(255, 255, 255, 0.045);
-}
-
-.dy-main {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.dy-topbar {
-  height: 56px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(12, 16, 23, 0.68);
-  backdrop-filter: blur(18px);
-  display: grid;
-  grid-template-columns: 180px 1fr 180px;
-  gap: 12px;
-  align-items: center;
-  padding: 0 14px;
-}
-
-.dy-tabs-hint {
-  font-size: 12px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0;
-}
-
-.dy-search {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 10px;
-  align-items: center;
-  max-width: 680px;
-  width: 100%;
-  justify-self: center;
-}
-
-.dy-search-input {
-  width: 100%;
-  background: rgba(255, 255, 255, 0.055);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  padding: 10px 14px;
-  outline: none;
-}
-
-.dy-search-input:focus {
-  border-color: rgba(43, 161, 255, 0.52);
-  box-shadow: 0 0 0 3px rgba(43, 161, 255, 0.14);
-}
-
-.dy-top-right {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.dy-content {
-  flex: 1;
-  min-height: 0;
-}
-
-.dy-content.padded {
-  overflow: auto;
-}
-
-.dy-content.full {
-  overflow: hidden;
-}
-
-.dy-mobile-nav {
-  display: none;
-}
-
-@media (max-width: 900px) {
-  .dy-shell {
-    grid-template-columns: 1fr;
-  }
-  .dy-aside {
-    display: none;
-  }
-  .dy-topbar {
-    grid-template-columns: 1fr;
-    padding: 0 10px;
-  }
-  .dy-top-left {
-    display: none;
-  }
-  .dy-top-right {
-    display: none;
-  }
-  .dy-mobile-nav {
-    height: 48px;
-    display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: 1fr;
-    border-bottom: 1px solid var(--border);
-    background: rgba(12, 16, 23, 0.74);
-    backdrop-filter: blur(18px);
-  }
-  .dy-mobile-link {
-    display: grid;
-    place-items: center;
-    color: var(--muted);
-    font-size: 13px;
-    text-decoration: none;
-    border-bottom: 2px solid transparent;
-  }
-  .dy-mobile-link.router-link-active {
-    color: var(--text);
-    border-bottom-color: var(--primary);
-  }
-  .dy-search {
-    max-width: none;
-  }
-}
-</style>

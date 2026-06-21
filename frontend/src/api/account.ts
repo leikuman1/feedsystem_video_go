@@ -22,15 +22,15 @@ export function changePassword(username: string, oldPassword: string, newPasswor
     username,
     old_password: oldPassword,
     new_password: newPassword,
-  })
+  }, { authRequired: true })
 }
 
 export function findById(id: number) {
-  return postJson<Account>('/account/findByID', { id })
+  return postJson<Account>('/account/findByID', { id }, { authRequired: true })
 }
 
 export function findByUsername(username: string) {
-  return postJson<Account>('/account/findByUsername', { username })
+  return postJson<Account>('/account/findByUsername', { username }, { authRequired: true })
 }
 
 export function uploadAvatar(file: File) {
@@ -39,7 +39,7 @@ export function uploadAvatar(file: File) {
   return postForm<{ avatar_url: string }>('/account/uploadAvatar', fd, { authRequired: true })
 }
 
-export function updateProfile(data: { avatar_url?: string; bio?: string }) {
+export function updateProfile(data: { bio?: string }) {
   return postJson<MessageResponse>('/account/updateProfile', data, { authRequired: true })
 }
 
