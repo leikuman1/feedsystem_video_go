@@ -2,6 +2,7 @@
 backend/.run/
 data/
 .sisyphus/
+.agents/
 docs/
 
 #
