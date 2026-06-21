@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
+	"feedsystem_video_go/internal/storage"
 	"feedsystem_video_go/internal/video"
 	"fmt"
 	"log"
@@ -17,20 +18,33 @@ import (
 )
 
 type FeedService struct {
-	repo         *FeedRepository
-	likeRepo     *video.LikeRepository
-	rediscache   *rediscache.Client
-	localcache   *cache.Cache
-	cacheTTL     time.Duration
-	requestGroup singleflight.Group
+	repo          *FeedRepository
+	likeRepo      *video.LikeRepository
+	rediscache    *rediscache.Client
+	localcache    *cache.Cache
+	cacheTTL      time.Duration
+	requestGroup  singleflight.Group
+	mediaResolver *storage.URLResolver
 }
 
 type CachedFeedData struct {
 	PublicVideos []video.Video `json:"public_videos"`
 }
 
-func NewFeedService(repo *FeedRepository, likeRepo *video.LikeRepository, rediscache *rediscache.Client) *FeedService {
-	return &FeedService{repo: repo, likeRepo: likeRepo, rediscache: rediscache, localcache: cache.New(3*time.Second, 5*time.Second), cacheTTL: 24 * time.Hour}
+func NewFeedService(
+	repo *FeedRepository,
+	likeRepo *video.LikeRepository,
+	rediscache *rediscache.Client,
+	mediaResolver *storage.URLResolver,
+) *FeedService {
+	return &FeedService{
+		repo:          repo,
+		likeRepo:      likeRepo,
+		rediscache:    rediscache,
+		localcache:    cache.New(3*time.Second, 5*time.Second),
+		cacheTTL:      24 * time.Hour,
+		mediaResolver: mediaResolver,
+	}
 }
 
 func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*video.Video, error) {
@@ -543,13 +557,21 @@ func (f *FeedService) buildFeedVideos(ctx context.Context, videos []*video.Video
 		return nil, err
 	}
 	for _, video := range videos {
+		playURL, err := f.mediaResolver.Resolve(ctx, video.PlayObjectKey, video.PlayURL)
+		if err != nil {
+			return nil, err
+		}
+		coverURL, err := f.mediaResolver.Resolve(ctx, video.CoverObjectKey, video.CoverURL)
+		if err != nil {
+			return nil, err
+		}
 		feedVideos = append(feedVideos, FeedVideoItem{
 			ID:          video.ID,
 			Author:      FeedAuthor{ID: video.AuthorID, Username: video.Username},
 			Title:       video.Title,
 			Description: video.Description,
-			PlayURL:     video.PlayURL,
-			CoverURL:    video.CoverURL,
+			PlayURL:     playURL,
+			CoverURL:    coverURL,
 			CreateTime:  video.CreateTime.Unix(),
 			LikesCount:  video.LikesCount,
 			IsLiked:     likedMap[video.ID],

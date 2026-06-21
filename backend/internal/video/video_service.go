@@ -11,6 +11,8 @@ import (
 	"feedsystem_video_go/internal/apierror"
 	"feedsystem_video_go/internal/middleware/rabbitmq"
 	rediscache "feedsystem_video_go/internal/middleware/redis"
+	"feedsystem_video_go/internal/storage"
+	"log"
 
 	"gorm.io/gorm"
 )
@@ -20,10 +22,22 @@ type VideoService struct {
 	cache        *rediscache.Client
 	cacheTTL     time.Duration
 	popularityMQ *rabbitmq.PopularityMQ
+	storage      storage.ObjectStorage
 }
 
-func NewVideoService(repo *VideoRepository, cache *rediscache.Client, popularityMQ *rabbitmq.PopularityMQ) *VideoService {
-	return &VideoService{repo: repo, cache: cache, cacheTTL: 5 * time.Minute, popularityMQ: popularityMQ}
+func NewVideoService(
+	repo *VideoRepository,
+	cache *rediscache.Client,
+	popularityMQ *rabbitmq.PopularityMQ,
+	objectStore storage.ObjectStorage,
+) *VideoService {
+	return &VideoService{
+		repo:         repo,
+		cache:        cache,
+		cacheTTL:     5 * time.Minute,
+		popularityMQ: popularityMQ,
+		storage:      objectStore,
+	}
 }
 
 func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
@@ -31,17 +45,17 @@ func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
 		return errors.New("video is nil")
 	}
 	video.Title = strings.TrimSpace(video.Title)
-	video.PlayURL = strings.TrimSpace(video.PlayURL)
-	video.CoverURL = strings.TrimSpace(video.CoverURL)
+	video.PlayObjectKey = strings.TrimSpace(video.PlayObjectKey)
+	video.CoverObjectKey = strings.TrimSpace(video.CoverObjectKey)
 
 	if video.Title == "" {
 		return errors.New("title is required")
 	}
-	if video.PlayURL == "" {
-		return errors.New("play url is required")
+	if video.PlayObjectKey == "" {
+		return errors.New("play object key is required")
 	}
-	if video.CoverURL == "" {
-		return errors.New("cover url is required")
+	if video.CoverObjectKey == "" {
+		return errors.New("cover object key is required")
 	}
 
 	//事务保证视频写入库和消息写入本地消息表的一致性
@@ -90,6 +104,16 @@ func (vs *VideoService) Delete(ctx context.Context, id uint, authorID uint) erro
 	}
 	if err := vs.repo.DeleteVideo(ctx, id); err != nil {
 		return err
+	}
+	if vs.storage != nil {
+		for _, key := range []string{video.PlayObjectKey, video.CoverObjectKey} {
+			if key == "" {
+				continue
+			}
+			if err := vs.storage.RemoveObject(context.Background(), key); err != nil {
+				log.Printf("delete media object failed: video_id=%d key=%s err=%v", id, key, err)
+			}
+		}
 	}
 	if vs.cache != nil {
 		cacheKey := vs.cache.Key("video:detail:id=%d", id)

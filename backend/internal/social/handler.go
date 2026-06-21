@@ -1,20 +1,23 @@
 package social
 
 import (
+	"context"
 	"feedsystem_video_go/internal/account"
 	"feedsystem_video_go/internal/apierror"
 	"feedsystem_video_go/internal/middleware/jwt"
+	"feedsystem_video_go/internal/storage"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
 
 type SocialHandler struct {
-	service *SocialService
+	service       *SocialService
+	mediaResolver *storage.URLResolver
 }
 
-func NewSocialHandler(service *SocialService) *SocialHandler {
-	return &SocialHandler{service: service}
+func NewSocialHandler(service *SocialService, mediaResolver *storage.URLResolver) *SocialHandler {
+	return &SocialHandler{service: service, mediaResolver: mediaResolver}
 }
 
 func (h *SocialHandler) Follow(c *gin.Context) {
@@ -91,11 +94,13 @@ func (h *SocialHandler) GetAllFollowers(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	if followers == nil {
-		followers = []*account.Account{}
+	presentedFollowers, err := h.presentAccounts(c.Request.Context(), followers)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create avatar URL"})
+		return
 	}
 	followerCount, _ := h.service.CountFollowers(c.Request.Context(), vloggerID)
-	c.JSON(http.StatusOK, GetAllFollowersResponse{Followers: followers, FollowerCount: followerCount})
+	c.JSON(http.StatusOK, GetAllFollowersResponse{Followers: presentedFollowers, FollowerCount: followerCount})
 }
 
 func (h *SocialHandler) GetAllVloggers(c *gin.Context) {
@@ -120,11 +125,13 @@ func (h *SocialHandler) GetAllVloggers(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	if vloggers == nil {
-		vloggers = []*account.Account{}
+	presentedVloggers, err := h.presentAccounts(c.Request.Context(), vloggers)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create avatar URL"})
+		return
 	}
 	vloggerCount, _ := h.service.CountVloggers(c.Request.Context(), followerID)
-	c.JSON(http.StatusOK, GetAllVloggersResponse{Vloggers: vloggers, VloggerCount: vloggerCount})
+	c.JSON(http.StatusOK, GetAllVloggersResponse{Vloggers: presentedVloggers, VloggerCount: vloggerCount})
 }
 
 func (h *SocialHandler) GetCounts(c *gin.Context) {
@@ -136,4 +143,24 @@ func (h *SocialHandler) GetCounts(c *gin.Context) {
 	followerCount, _ := h.service.CountFollowers(c.Request.Context(), accountID)
 	vloggerCount, _ := h.service.CountVloggers(c.Request.Context(), accountID)
 	c.JSON(http.StatusOK, SocialCounts{FollowerCount: followerCount, VloggerCount: vloggerCount})
+}
+
+func (h *SocialHandler) presentAccounts(
+	ctx context.Context,
+	accounts []*account.Account,
+) ([]account.FindByIDResponse, error) {
+	result := make([]account.FindByIDResponse, 0, len(accounts))
+	for _, item := range accounts {
+		avatarURL, err := h.mediaResolver.Resolve(ctx, item.AvatarObjectKey, item.AvatarURL)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, account.FindByIDResponse{
+			ID:        item.ID,
+			Username:  item.Username,
+			AvatarURL: avatarURL,
+			Bio:       item.Bio,
+		})
+	}
+	return result, nil
 }

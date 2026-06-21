@@ -173,8 +173,8 @@ func (as *AccountService) Logout(ctx context.Context, accountID uint) error {
 	return as.accountRepository.Logout(ctx, account.ID)
 }
 
-func (as *AccountService) UpdateAvatar(ctx context.Context, accountID uint, avatarURL string) error {
-	return as.accountRepository.UpdateAvatar(ctx, accountID, avatarURL)
+func (as *AccountService) UpdateAvatarObjectKey(ctx context.Context, accountID uint, objectKey string) error {
+	return as.accountRepository.UpdateAvatarObjectKey(ctx, accountID, objectKey)
 }
 
 func (as *AccountService) FindAll(ctx context.Context) ([]*Account, error) {
@@ -185,9 +185,6 @@ func (as *AccountService) UpdateProfile(ctx context.Context, accountID uint, req
 	updates := map[string]interface{}{}
 	if req.Bio != "" {
 		updates["bio"] = strings.TrimSpace(req.Bio)
-	}
-	if req.AvatarURL != "" {
-		updates["avatar_url"] = strings.TrimSpace(req.AvatarURL)
 	}
 	if len(updates) == 0 {
 		return errors.New("nothing to update")

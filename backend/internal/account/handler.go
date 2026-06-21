@@ -1,6 +1,7 @@
 package account
 
 import (
+	"context"
 	"errors"
 	"mime"
 	"net/http"
@@ -102,7 +103,12 @@ func (h *AccountHandler) FindByID(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	} else {
-		c.JSON(200, account)
+		response, err := h.presentAccount(c.Request.Context(), account)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create avatar URL"})
+			return
+		}
+		c.JSON(http.StatusOK, response)
 	}
 }
 
@@ -116,7 +122,12 @@ func (h *AccountHandler) FindByUsername(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	} else {
-		c.JSON(200, account)
+		response, err := h.presentAccount(c.Request.Context(), account)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create avatar URL"})
+			return
+		}
+		c.JSON(http.StatusOK, response)
 	}
 }
 
@@ -197,13 +208,13 @@ func (h *AccountHandler) UploadAvatar(c *gin.Context) {
 		return
 	}
 
+	if err := h.accountService.UpdateAvatarObjectKey(c.Request.Context(), accountID, key); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	avatarURL, err := h.storage.PresignedGetURL(c.Request.Context(), key, h.signedURLTTL)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create avatar URL"})
-		return
-	}
-	if err := h.accountService.UpdateAvatar(c.Request.Context(), accountID, avatarURL); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"object_key": key, "avatar_url": avatarURL})
@@ -251,4 +262,18 @@ func getAccountID(c *gin.Context) (uint, error) {
 		return 0, errors.New("accountID has invalid type")
 	}
 	return id, nil
+}
+
+func (h *AccountHandler) presentAccount(ctx context.Context, account *Account) (FindByIDResponse, error) {
+	resolver := storage.NewURLResolver(h.storage, h.signedURLTTL)
+	avatarURL, err := resolver.Resolve(ctx, account.AvatarObjectKey, account.AvatarURL)
+	if err != nil {
+		return FindByIDResponse{}, err
+	}
+	return FindByIDResponse{
+		ID:        account.ID,
+		Username:  account.Username,
+		AvatarURL: avatarURL,
+		Bio:       account.Bio,
+	}, nil
 }

@@ -1,6 +1,7 @@
 package video
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -56,20 +57,33 @@ func (vh *VideoHandler) PublishVideo(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
+	if !storage.IsOwnedMediaObjectKey(req.PlayObjectKey, storage.MediaVideo, authorId) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid play_object_key"})
+		return
+	}
+	if !storage.IsOwnedMediaObjectKey(req.CoverObjectKey, storage.MediaCover, authorId) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cover_object_key"})
+		return
+	}
 	video := &Video{
-		AuthorID:    authorId,
-		Username:    username,
-		Title:       req.Title,
-		Description: req.Description,
-		PlayURL:     req.PlayURL,
-		CoverURL:    req.CoverURL,
-		CreateTime:  time.Now(),
+		AuthorID:       authorId,
+		Username:       username,
+		Title:          req.Title,
+		Description:    req.Description,
+		PlayObjectKey:  req.PlayObjectKey,
+		CoverObjectKey: req.CoverObjectKey,
+		CreateTime:     time.Now(),
 	}
 	if err := vh.service.Publish(c.Request.Context(), video); err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, video)
+	response, err := vh.presentVideo(c.Request.Context(), video)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create media URL"})
+		return
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (vh *VideoHandler) UploadVideo(c *gin.Context) {
@@ -245,7 +259,16 @@ func (vh *VideoHandler) ListByAuthorID(c *gin.Context) {
 	if videos == nil {
 		videos = []Video{}
 	}
-	c.JSON(200, videos)
+	responses := make([]VideoResponse, 0, len(videos))
+	for i := range videos {
+		response, err := vh.presentVideo(c.Request.Context(), &videos[i])
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create media URL"})
+			return
+		}
+		responses = append(responses, response)
+	}
+	c.JSON(http.StatusOK, responses)
 }
 
 func (vh *VideoHandler) GetDetail(c *gin.Context) {
@@ -259,7 +282,12 @@ func (vh *VideoHandler) GetDetail(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, video)
+	response, err := vh.presentVideo(c.Request.Context(), video)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create media URL"})
+		return
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (vh *VideoHandler) UpdateLikesCount(c *gin.Context) {
@@ -273,4 +301,28 @@ func (vh *VideoHandler) UpdateLikesCount(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"message": "likes count updated"})
+}
+
+func (vh *VideoHandler) presentVideo(ctx context.Context, video *Video) (VideoResponse, error) {
+	resolver := storage.NewURLResolver(vh.storage, vh.signedURLTTL)
+	playURL, err := resolver.Resolve(ctx, video.PlayObjectKey, video.PlayURL)
+	if err != nil {
+		return VideoResponse{}, err
+	}
+	coverURL, err := resolver.Resolve(ctx, video.CoverObjectKey, video.CoverURL)
+	if err != nil {
+		return VideoResponse{}, err
+	}
+	return VideoResponse{
+		ID:          video.ID,
+		AuthorID:    video.AuthorID,
+		Username:    video.Username,
+		Title:       video.Title,
+		Description: video.Description,
+		PlayURL:     playURL,
+		CoverURL:    coverURL,
+		CreateTime:  video.CreateTime,
+		LikesCount:  video.LikesCount,
+		Popularity:  video.Popularity,
+	}, nil
 }

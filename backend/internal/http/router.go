@@ -35,6 +35,7 @@ func SetRouter(
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 	r.Static("/static", "./.run/uploads")
+	mediaResolver := storage.NewURLResolver(objectStore, signedURLExpiry)
 	// rate_limit
 	loginLimiter := ratelimit.Limit(cache, "account_login", 10, time.Minute, ratelimit.KeyByIP)
 	registerLimiter := ratelimit.Limit(cache, "account_register", 5, time.Hour, ratelimit.KeyByIP)
@@ -71,7 +72,7 @@ func SetRouter(
 		log.Printf("PopularityMQ init failed (mq disabled): %v", err)
 		popularityMQ = nil
 	}
-	videoService := video.NewVideoService(videoRepository, cache, popularityMQ)
+	videoService := video.NewVideoService(videoRepository, cache, popularityMQ, objectStore)
 	videoHandler := video.NewVideoHandler(videoService, accountService, objectStore, signedURLExpiry)
 	chunkHandler := video.NewChunkUploadHandler(cache, objectStore, signedURLExpiry)
 	videoGroup := r.Group("/video")
@@ -136,7 +137,7 @@ func SetRouter(
 	}
 	socialRepository := social.NewSocialRepository(db)
 	socialService := social.NewSocialService(socialRepository, accountRepository, socialMQ, cache)
-	socialHandler := social.NewSocialHandler(socialService)
+	socialHandler := social.NewSocialHandler(socialService, mediaResolver)
 	socialGroup := r.Group("/social")
 	protectedSocialGroup := socialGroup.Group("")
 	protectedSocialGroup.Use(jwt.JWTAuth(accountRepository, cache))
@@ -168,15 +169,20 @@ func SetRouter(
 		followerCount, _ := socialRepository.CountFollowers(c.Request.Context(), req.AccountID)
 		vloggerCount, _ := socialRepository.CountVloggers(c.Request.Context(), req.AccountID)
 
+		avatarURL, err := mediaResolver.Resolve(c.Request.Context(), acc.AvatarObjectKey, acc.AvatarURL)
+		if err != nil {
+			c.JSON(502, gin.H{"error": "failed to create avatar URL"})
+			return
+		}
 		c.JSON(200, account.GetProfileResponse{
-			Account:    account.FindByIDResponse{ID: acc.ID, Username: acc.Username, AvatarURL: acc.AvatarURL, Bio: acc.Bio},
+			Account:    account.FindByIDResponse{ID: acc.ID, Username: acc.Username, AvatarURL: avatarURL, Bio: acc.Bio},
 			VideoCount: videoCount, TotalLikes: totalLikes,
 			FollowerCount: followerCount, VloggerCount: vloggerCount,
 		})
 	})
 	// feed
 	feedRepository := feed.NewFeedRepository(db)
-	feedService := feed.NewFeedService(feedRepository, likeRepository, cache)
+	feedService := feed.NewFeedService(feedRepository, likeRepository, cache, mediaResolver)
 	feedHandler := feed.NewFeedHandler(feedService)
 	feedGroup := r.Group("/feed")
 	feedGroup.Use(jwt.SoftJWTAuth(accountRepository, cache))

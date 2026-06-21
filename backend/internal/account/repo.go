@@ -85,8 +85,11 @@ func (ar *AccountRepository) Logout(ctx context.Context, id uint) error {
 	return nil
 }
 
-func (ar *AccountRepository) UpdateAvatar(ctx context.Context, accountID uint, avatarURL string) error {
-	return ar.db.WithContext(ctx).Model(&Account{}).Where("id = ?", accountID).Update("avatar_url", avatarURL).Error
+func (ar *AccountRepository) UpdateAvatarObjectKey(ctx context.Context, accountID uint, objectKey string) error {
+	return ar.db.WithContext(ctx).Model(&Account{}).
+		Where("id = ?", accountID).
+		Updates(map[string]interface{}{"avatar_object_key": objectKey, "avatar_url": ""}).
+		Error
 }
 
 func (ar *AccountRepository) UpdateToken(ctx context.Context, id uint, token string) error {
