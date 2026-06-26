@@ -251,8 +251,8 @@ func DefaultLocalConfig() Config {
 			Password: "password123",
 		},
 		MinIO: MinIOConfig{
-			Endpoint:               "localhost:9000",
-			PublicEndpoint:         "localhost:9000",
+			Endpoint:               "localhost:9002",
+			PublicEndpoint:         "localhost:9002",
 			AccessKey:              "minioadmin",
 			SecretKey:              "minioadmin",
 			Bucket:                 "feedsystem-media",
