@@ -11,10 +11,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/minio/minio-go/v7/pkg/lifecycle"
 )
-
-const incompleteUploadExpiryDays = 1
 
 type MinIOStorage struct {
 	client       *minio.Client
@@ -69,17 +66,6 @@ func (s *MinIOStorage) EnsureReady(ctx context.Context) error {
 		if err := s.client.MakeBucket(ctx, s.bucket, minio.MakeBucketOptions{Region: s.region}); err != nil {
 			return fmt.Errorf("create minio bucket %q: %w", s.bucket, err)
 		}
-	}
-
-	rule := lifecycle.Rule{
-		ID:     "abort-incomplete-multipart-uploads",
-		Status: "Enabled",
-		AbortIncompleteMultipartUpload: lifecycle.AbortIncompleteMultipartUpload{
-			DaysAfterInitiation: lifecycle.ExpirationDays(incompleteUploadExpiryDays),
-		},
-	}
-	if err := s.client.SetBucketLifecycle(ctx, s.bucket, &lifecycle.Configuration{Rules: []lifecycle.Rule{rule}}); err != nil {
-		return fmt.Errorf("configure minio lifecycle: %w", err)
 	}
 	return nil
 }

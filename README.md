@@ -175,7 +175,7 @@ GitHub Actions 配置位于 `.github/workflows/ci.yml`，在 Pull Request 以及
 | `RABBITMQ_HOST` / `RABBITMQ_PORT` | 配置文件值 | RabbitMQ 地址 |
 | `RABBITMQ_USER` / `RABBITMQ_PASS` | `admin` / `password123` | RabbitMQ 账号 |
 | `MINIO_ENDPOINT` | `minio:9000` | API 容器访问 MinIO 的内网地址 |
-| `MINIO_PUBLIC_ENDPOINT` | `localhost:9000` | 浏览器访问预签名 URL 的地址 |
+| `MINIO_PUBLIC_ENDPOINT` | `localhost:9002` | 浏览器访问预签名 URL 的地址 |
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | `minioadmin` | MinIO 凭据，生产必须修改 |
 | `MINIO_BUCKET` | `feedsystem-media` | 私有媒体 bucket |
 | `BOOTSTRAP_USERNAME` / `BOOTSTRAP_PASSWORD` | 空 | 首次启动时幂等创建的演示账号 |

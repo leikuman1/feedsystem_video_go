@@ -60,6 +60,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_API_STALE_UPLOADS_EXPIRY: 24h
     ports:
       - "9002:9000"
       - "9003:9001"
@@ -96,6 +97,7 @@ services:
       target: api
     restart: always
     environment:
+      TZ: Asia/Shanghai
       CONFIG_PATH: /app/configs/config.yaml
       JWT_SECRET: ${JWT_SECRET:-feedsystem-dev-secret-key}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
@@ -139,6 +141,7 @@ services:
       target: worker
     restart: always
     environment:
+      TZ: Asia/Shanghai
       CONFIG_PATH: /app/configs/config.yaml
       JWT_SECRET: ${JWT_SECRET:-feedsystem-dev-secret-key}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-feedsystem}
@@ -165,6 +168,7 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      target: runtime
     restart: always
     ports:
       - "5173:80"
