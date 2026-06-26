@@ -79,10 +79,10 @@ async function login() {
       <div class="max-w-2xl">
         <Badge data-reveal variant="outline" class="mb-6 border-primary/30 text-primary">PRIVATE DEMO</Badge>
         <h1 data-reveal class="text-balance text-5xl font-semibold leading-[1.08] tracking-tight xl:text-7xl">
-          一个可解释、可演示的短视频 Feed 系统。
+          一个短视频 Feed 系统。
         </h1>
         <p data-reveal class="mt-6 max-w-xl text-lg leading-8 text-muted-foreground">
-          聚焦对象存储、异步消息、缓存降级、断点续传与 Feed 分页。登录后可体验完整产品流程，并查看系统架构说明。
+          聚焦对象存储、异步消息断点续传与 Feed 分页。登录后可体验完整产品流程，并查看系统架构说明。
         </p>
         <div class="mt-10 grid gap-3">
           <div
@@ -109,7 +109,7 @@ async function login() {
             <LockKeyhole class="size-5" />
           </span>
           <CardTitle class="text-2xl">进入项目演示</CardTitle>
-          <CardDescription>该部署仅向持有演示账号的访问者开放。</CardDescription>
+          <CardDescription></CardDescription>
         </CardHeader>
         <CardContent>
           <form class="grid gap-5" @submit.prevent="login">
@@ -132,7 +132,6 @@ async function login() {
             </Button>
           </form>
           <p class="mt-5 text-xs leading-5 text-muted-foreground">
-            演示账号由服务器环境变量初始化，不开放公网注册。
           </p>
         </CardContent>
       </Card>
