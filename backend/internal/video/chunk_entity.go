@@ -3,36 +3,15 @@ package video
 const ChunkSize = 5 << 20 // 5 MB
 
 type ChunkUploadSession struct {
-	UploadID        string         `json:"upload_id"`
-	StorageUploadID string         `json:"storage_upload_id"`
-	ObjectKey       string         `json:"object_key"`
-	AccountID       uint           `json:"account_id"`
-	Filename        string         `json:"filename"`
-	FileSize        int64          `json:"file_size"`
-	ChunkSize       int64          `json:"chunk_size"`
-	TotalChunks     int            `json:"total_chunks"`
-	FileHash        string         `json:"file_hash"`
-	UploadedBits    []bool         `json:"uploaded_bits"`
-	PartETags       map[int]string `json:"part_etags"`
-}
-
-func (s *ChunkUploadSession) UploadedChunks() []int {
-	indices := make([]int, 0)
-	for i, uploaded := range s.UploadedBits {
-		if uploaded {
-			indices = append(indices, i)
-		}
-	}
-	return indices
-}
-
-func (s *ChunkUploadSession) IsComplete() bool {
-	for _, b := range s.UploadedBits {
-		if !b {
-			return false
-		}
-	}
-	return true
+	UploadID        string `json:"upload_id"`
+	StorageUploadID string `json:"storage_upload_id"`
+	ObjectKey       string `json:"object_key"`
+	AccountID       uint   `json:"account_id"`
+	Filename        string `json:"filename"`
+	FileSize        int64  `json:"file_size"`
+	ChunkSize       int64  `json:"chunk_size"`
+	TotalChunks     int    `json:"total_chunks"`
+	FileHash        string `json:"file_hash"`
 }
 
 type InitChunkUploadRequest struct {

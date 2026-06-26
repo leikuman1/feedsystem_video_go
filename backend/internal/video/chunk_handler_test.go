@@ -414,6 +414,67 @@ func TestIdempotentChunkUpload(t *testing.T) {
 	}
 }
 
+func TestConcurrentChunkUploadDoesNotLoseProgress(t *testing.T) {
+	h, cleanup := setupTestEnv(t)
+	defer cleanup()
+
+	chunkSize := 256
+	totalChunks := 8
+	chunks, chunkHashes, fileHash := makeTestChunks(t, totalChunks, chunkSize)
+	uploadID := initUpload(t, h, "concurrent.mp4", int64(totalChunks*chunkSize), int64(chunkSize), totalChunks, fileHash)
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, totalChunks)
+	for i := 0; i < totalChunks; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, rec := newMultipartContext(t, "/video/chunk/upload", map[string]string{
+				"upload_id":   uploadID,
+				"chunk_index": fmt.Sprintf("%d", i),
+				"chunk_hash":  chunkHashes[i],
+			}, chunks[i])
+			h.UploadChunk(c)
+			if rec.Code != http.StatusOK {
+				errCh <- fmt.Errorf("upload chunk %d: expected 200, got %d, body: %s", i, rec.Code, rec.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c, rec := newJSONContext(t, "/video/chunk/status", ChunkStatusRequest{UploadID: uploadID})
+	h.ChunkStatus(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: expected 200, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+	statusResp := parseJSON(t, rec)
+	if got := len(statusResp["uploaded_chunks"].([]interface{})); got != totalChunks {
+		t.Fatalf("expected %d uploaded chunks, got %d", totalChunks, got)
+	}
+
+	c, rec = newJSONContext(t, "/video/chunk/complete", CompleteChunkUploadRequest{UploadID: uploadID})
+	h.CompleteChunkUpload(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("complete: expected 200, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+	resp := parseJSON(t, rec)
+	merged := readMergedFile(t, h, resp)
+	var expected bytes.Buffer
+	for _, ch := range chunks {
+		expected.Write(ch)
+	}
+	if !bytes.Equal(merged, expected.Bytes()) {
+		t.Fatalf("merged file content mismatch: got %d bytes, want %d bytes", len(merged), expected.Len())
+	}
+}
+
 func TestHashMismatch(t *testing.T) {
 	h, cleanup := setupTestEnv(t)
 	defer cleanup()

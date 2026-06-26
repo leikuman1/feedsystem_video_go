@@ -2,6 +2,7 @@ package video
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,6 +63,14 @@ func (h *ChunkUploadHandler) sessionKey(uploadID string) string {
 	return h.cache.Key("chunk_upload:%s", uploadID)
 }
 
+func (h *ChunkUploadHandler) uploadedKey(uploadID string) string {
+	return h.cache.Key("chunk_upload:%s:uploaded", uploadID)
+}
+
+func (h *ChunkUploadHandler) etagKey(uploadID string) string {
+	return h.cache.Key("chunk_upload:%s:etags", uploadID)
+}
+
 func (h *ChunkUploadHandler) hashKey(accountID uint, fileHash string) string {
 	return h.cache.Key("chunk_upload_hash:%d:%s", accountID, fileHash)
 }
@@ -77,9 +87,6 @@ func (h *ChunkUploadHandler) getSession(ctx *gin.Context, uploadID string) (*Chu
 	if err := json.Unmarshal(b, &session); err != nil {
 		return nil, fmt.Errorf("invalid session data")
 	}
-	if session.PartETags == nil {
-		session.PartETags = make(map[int]string)
-	}
 	return &session, nil
 }
 
@@ -92,6 +99,90 @@ func (h *ChunkUploadHandler) saveSession(ctx *gin.Context, session *ChunkUploadS
 		return err
 	}
 	return h.cache.SetBytes(ctx.Request.Context(), h.sessionKey(session.UploadID), b, sessionTTL)
+}
+
+func (h *ChunkUploadHandler) uploadedChunks(ctx context.Context, uploadID string) ([]int, error) {
+	values, err := h.cache.SMembers(ctx, h.uploadedKey(uploadID))
+	if err != nil {
+		return nil, err
+	}
+	chunks := make([]int, 0, len(values))
+	for _, value := range values {
+		chunkIndex, err := strconv.Atoi(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid uploaded chunk index %q: %w", value, err)
+		}
+		chunks = append(chunks, chunkIndex)
+	}
+	sort.Ints(chunks)
+	return chunks, nil
+}
+
+func (h *ChunkUploadHandler) hasUploadedChunk(ctx context.Context, uploadID string, chunkIndex int) (bool, error) {
+	chunks, err := h.uploadedChunks(ctx, uploadID)
+	if err != nil {
+		return false, err
+	}
+	for _, uploaded := range chunks {
+		if uploaded == chunkIndex {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (h *ChunkUploadHandler) partETags(ctx context.Context, uploadID string) (map[int]string, error) {
+	values, err := h.cache.HGetAll(ctx, h.etagKey(uploadID))
+	if err != nil {
+		return nil, err
+	}
+	etags := make(map[int]string, len(values))
+	for key, etag := range values {
+		chunkIndex, err := strconv.Atoi(key)
+		if err != nil {
+			return nil, fmt.Errorf("invalid chunk etag index %q: %w", key, err)
+		}
+		etags[chunkIndex] = etag
+	}
+	return etags, nil
+}
+
+func (h *ChunkUploadHandler) refreshUploadTTL(ctx context.Context, session *ChunkUploadSession) error {
+	if err := h.cache.Expire(ctx, h.sessionKey(session.UploadID), sessionTTL); err != nil {
+		return err
+	}
+	if err := h.cache.Expire(ctx, h.uploadedKey(session.UploadID), sessionTTL); err != nil {
+		return err
+	}
+	if err := h.cache.Expire(ctx, h.etagKey(session.UploadID), sessionTTL); err != nil {
+		return err
+	}
+	return h.cache.Expire(ctx, h.hashKey(session.AccountID, session.FileHash), sessionTTL)
+}
+
+func (h *ChunkUploadHandler) recordUploadedPart(
+	ctx context.Context,
+	session *ChunkUploadSession,
+	chunkIndex int,
+	etag string,
+) error {
+	field := strconv.Itoa(chunkIndex)
+	// Write the ETag before marking the chunk uploaded, so complete cannot see
+	// a finished chunk without the metadata MinIO requires.
+	if err := h.cache.HSet(ctx, h.etagKey(session.UploadID), field, etag); err != nil {
+		return err
+	}
+	if err := h.cache.SAdd(ctx, h.uploadedKey(session.UploadID), field); err != nil {
+		return err
+	}
+	return h.refreshUploadTTL(ctx, session)
+}
+
+func (h *ChunkUploadHandler) deleteUploadState(ctx context.Context, session *ChunkUploadSession) {
+	_ = h.cache.Del(ctx, h.sessionKey(session.UploadID))
+	_ = h.cache.Del(ctx, h.uploadedKey(session.UploadID))
+	_ = h.cache.Del(ctx, h.etagKey(session.UploadID))
+	_ = h.cache.Del(ctx, h.hashKey(session.AccountID, session.FileHash))
 }
 
 func (h *ChunkUploadHandler) InitChunkUpload(c *gin.Context) {
@@ -137,9 +228,15 @@ func (h *ChunkUploadHandler) InitChunkUpload(c *gin.Context) {
 			session.TotalChunks == req.TotalChunks {
 			_ = h.cache.SetBytes(c.Request.Context(), hashKey, existingID, sessionTTL)
 			_ = h.saveSession(c, session)
+			_ = h.refreshUploadTTL(c.Request.Context(), session)
+			uploadedChunks, err := h.uploadedChunks(c.Request.Context(), session.UploadID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read uploaded chunks"})
+				return
+			}
 			c.JSON(http.StatusOK, gin.H{
 				"upload_id":       session.UploadID,
-				"uploaded_chunks": session.UploadedChunks(),
+				"uploaded_chunks": uploadedChunks,
 			})
 			return
 		}
@@ -173,8 +270,6 @@ func (h *ChunkUploadHandler) InitChunkUpload(c *gin.Context) {
 		ChunkSize:       req.ChunkSize,
 		TotalChunks:     req.TotalChunks,
 		FileHash:        req.FileHash,
-		UploadedBits:    make([]bool, req.TotalChunks),
-		PartETags:       make(map[int]string, req.TotalChunks),
 	}
 
 	if err := h.saveSession(c, session); err != nil {
@@ -224,7 +319,13 @@ func (h *ChunkUploadHandler) UploadChunk(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk_index"})
 		return
 	}
-	if session.UploadedBits[req.ChunkIndex] {
+	uploaded, err := h.hasUploadedChunk(c.Request.Context(), req.UploadID, req.ChunkIndex)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read uploaded chunks"})
+		return
+	}
+	if uploaded {
+		_ = h.refreshUploadTTL(c.Request.Context(), session)
 		c.JSON(http.StatusOK, gin.H{"chunk_index": req.ChunkIndex})
 		return
 	}
@@ -282,9 +383,7 @@ func (h *ChunkUploadHandler) UploadChunk(c *gin.Context) {
 		return
 	}
 
-	session.UploadedBits[req.ChunkIndex] = true
-	session.PartETags[req.ChunkIndex] = part.ETag
-	if err := h.saveSession(c, session); err != nil {
+	if err := h.recordUploadedPart(c.Request.Context(), session, req.ChunkIndex, part.ETag); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update session"})
 		return
 	}
@@ -317,10 +416,15 @@ func (h *ChunkUploadHandler) ChunkStatus(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
+	uploadedChunks, err := h.uploadedChunks(c.Request.Context(), session.UploadID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read uploaded chunks"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"upload_id":       session.UploadID,
-		"uploaded_chunks": session.UploadedChunks(),
+		"uploaded_chunks": uploadedChunks,
 		"total_chunks":    session.TotalChunks,
 	})
 }
@@ -350,28 +454,33 @@ func (h *ChunkUploadHandler) CompleteChunkUpload(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
-	if !session.IsComplete() {
-		missing := 0
-		for _, uploaded := range session.UploadedBits {
-			if !uploaded {
-				missing++
-				if missing >= 5 {
-					break
-				}
-			}
+	completed, err := h.cache.SCard(c.Request.Context(), h.uploadedKey(session.UploadID))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read uploaded chunks"})
+		return
+	}
+	if completed != int64(session.TotalChunks) {
+		missing := session.TotalChunks - int(completed)
+		if missing < 0 {
+			missing = 0
 		}
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":     "not all chunks uploaded",
 			"missing":   missing,
-			"completed": len(session.UploadedChunks()),
+			"completed": int(completed),
 			"total":     session.TotalChunks,
 		})
 		return
 	}
 
+	etags, err := h.partETags(c.Request.Context(), session.UploadID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read uploaded chunks"})
+		return
+	}
 	parts := make([]storage.CompletedPart, 0, session.TotalChunks)
 	for chunkIndex := 0; chunkIndex < session.TotalChunks; chunkIndex++ {
-		etag := session.PartETags[chunkIndex]
+		etag := etags[chunkIndex]
 		if etag == "" {
 			c.JSON(http.StatusConflict, gin.H{"error": "upload session is missing part metadata"})
 			return
@@ -399,8 +508,7 @@ func (h *ChunkUploadHandler) CompleteChunkUpload(c *gin.Context) {
 		return
 	}
 
-	_ = h.cache.Del(c.Request.Context(), h.sessionKey(req.UploadID))
-	_ = h.cache.Del(c.Request.Context(), h.hashKey(accountID, session.FileHash))
+	h.deleteUploadState(c.Request.Context(), session)
 
 	c.JSON(http.StatusOK, gin.H{
 		"object_key": session.ObjectKey,
@@ -438,7 +546,6 @@ func (h *ChunkUploadHandler) AbortChunkUpload(c *gin.Context) {
 		return
 	}
 
-	_ = h.cache.Del(c.Request.Context(), h.sessionKey(req.UploadID))
-	_ = h.cache.Del(c.Request.Context(), h.hashKey(accountID, session.FileHash))
+	h.deleteUploadState(c.Request.Context(), session)
 	c.JSON(http.StatusOK, gin.H{"message": "upload aborted"})
 }
