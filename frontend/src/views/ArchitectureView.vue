@@ -47,13 +47,6 @@ const flows = [
   },
 ]
 
-const inherited = [
-  '账号、点赞、评论、关注、Feed、私信基础业务',
-  'Redis 热点缓存与 Feed 游标分页',
-  'RabbitMQ 异步点赞、评论、关注与通知',
-  'Outbox 发布链路和 SSE 实时通知',
-]
-
 const improvements = [
   '本地磁盘迁移为 MinIO 私有对象存储',
   'Multipart 分片直写、断点续传、ETag 会话和主动终止',
@@ -70,9 +63,9 @@ const improvements = [
       <Card class="overflow-hidden">
         <CardHeader class="relative border-b border-border bg-[radial-gradient(circle_at_15%_20%,oklch(0.7_0.17_35/.16),transparent_35%)] py-10">
           <Badge variant="outline" class="mb-4 w-fit border-primary/30 text-primary">INTERVIEW ARCHITECTURE</Badge>
-          <CardTitle class="max-w-3xl text-3xl leading-tight md:text-5xl">短视频 Feed 系统架构与个人改造边界</CardTitle>
+          <CardTitle class="max-w-3xl text-3xl leading-tight md:text-5xl">短视频 Feed 系统架构与 dev 分支改造</CardTitle>
           <CardDescription class="mt-4 max-w-3xl text-base leading-7">
-            这不是“用了 Redis 和 MQ”的功能清单，而是可沿请求、事务、消息和降级路径逐段解释的系统。
+            面向面试演示，重点展示 MinIO 媒体存储、分片上传、Feed 缓存、Outbox 消息链路和生产部署方案。
           </CardDescription>
         </CardHeader>
       </Card>
@@ -117,23 +110,13 @@ const improvements = [
         </Card>
       </div>
 
-      <div class="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>项目原有能力</CardTitle>
-            <CardDescription>面试中应准确说明这是项目基础，而不是个人从零实现。</CardDescription>
-          </CardHeader>
-          <CardContent class="grid gap-3">
-            <div v-for="item in inherited" :key="item" class="rounded-lg border border-border bg-background/40 p-3 text-sm">{{ item }}</div>
-          </CardContent>
-        </Card>
-
+      <div>
         <Card class="border-primary/25">
           <CardHeader>
-            <CardTitle>本次 dev 分支个人改造</CardTitle>
+            <CardTitle>dev 分支核心改造</CardTitle>
             <CardDescription>可通过提交记录、测试和部署结果验证。</CardDescription>
           </CardHeader>
-          <CardContent class="grid gap-3">
+          <CardContent class="grid gap-3 md:grid-cols-2">
             <div v-for="item in improvements" :key="item" class="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm">{{ item }}</div>
           </CardContent>
         </Card>
