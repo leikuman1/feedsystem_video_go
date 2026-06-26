@@ -2,7 +2,6 @@ package video
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -141,15 +140,16 @@ func (vs *VideoService) GetDetail(ctx context.Context, id uint) (*Video, error) 
 		if err != nil {
 			return nil, false
 		}
-		var cached Video
-		if err := json.Unmarshal(b, &cached); err != nil {
+		cached, ok := UnmarshalVideoCache(b)
+		if !ok {
+			_ = vs.cache.Del(context.Background(), cacheKey)
 			return nil, false
 		}
-		return &cached, true
+		return cached, true
 	}
 
 	setCached := func(video *Video) {
-		b, err := json.Marshal(video)
+		b, err := MarshalVideoCache(video)
 		if err != nil {
 			return
 		}
@@ -167,10 +167,10 @@ func (vs *VideoService) GetDetail(ctx context.Context, id uint) (*Video, error) 
 		b, err := vs.cache.GetBytes(opCtx, cacheKey)
 		cancel()
 		if err == nil {
-			var cached Video
-			if err := json.Unmarshal(b, &cached); err == nil {
-				return &cached, nil
+			if cached, ok := UnmarshalVideoCache(b); ok {
+				return cached, nil
 			}
+			_ = vs.cache.Del(context.Background(), cacheKey)
 		} else if rediscache.IsMiss(err) {
 			lockKey := "lock:" + cacheKey
 

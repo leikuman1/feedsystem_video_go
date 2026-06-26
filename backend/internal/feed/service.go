@@ -31,6 +31,15 @@ type CachedFeedData struct {
 	PublicVideos []video.Video `json:"public_videos"`
 }
 
+const followingFeedCacheVersion = 1
+
+type followingFeedCache struct {
+	Version  int    `json:"version"`
+	VideoIDs []uint `json:"video_ids"`
+	NextTime int64  `json:"next_time"`
+	HasMore  bool   `json:"has_more"`
+}
+
 func NewFeedService(
 	repo *FeedRepository,
 	likeRepo *video.LikeRepository,
@@ -62,8 +71,11 @@ func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*vi
 		if f.localcache != nil {
 			if v, found := f.localcache.Get(cacheKey); found {
 				if data, ok := v.(video.Video); ok {
-					videoMap[id] = &data
-					continue
+					if video.HasVideoMediaReferences(&data) {
+						videoMap[id] = &data
+						continue
+					}
+					f.localcache.Delete(cacheKey)
 				}
 			}
 		}
@@ -92,15 +104,15 @@ func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*vi
 				id := missedL1[i]
 				if res != nil {
 					if str, ok := res.(string); ok {
-						var v video.Video
-						if err := json.Unmarshal([]byte(str), &v); err == nil {
-							videoMap[id] = &v
+						if v, ok := video.UnmarshalVideoCache([]byte(str)); ok {
+							videoMap[id] = v
 							// 回写更新 L1 本地缓存
 							if f.localcache != nil {
-								f.localcache.Set(cacheKeys[i], v, 5*time.Second)
+								f.localcache.Set(cacheKeys[i], *v, 5*time.Second)
 							}
 							continue
 						}
+						_ = f.rediscache.Del(context.Background(), cacheKeys[i])
 					}
 				}
 				missedL2 = append(missedL2, id)
@@ -134,7 +146,7 @@ func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*vi
 
 				safeCopy := *videoList[0]
 				cachekey := f.rediscache.Key("video:entity:%d", safeCopy.ID)
-				if b, err := json.Marshal(safeCopy); err == nil {
+				if b, err := video.MarshalVideoCache(&safeCopy); err == nil {
 					//异步回写redis
 					go func(k string, b []byte) {
 						setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -350,10 +362,10 @@ func (f *FeedService) ListLikesCount(ctx context.Context, limit int, cursor *Lik
 
 // 按照关注列表查询视频
 func (f *FeedService) ListByFollowing(ctx context.Context, limit int, latestBefore time.Time, viewerAccountID uint) (ListByFollowingResponse, error) {
-	doListByFollowingFromDB := func() (ListByFollowingResponse, error) {
+	doListByFollowingFromDB := func() (ListByFollowingResponse, followingFeedCache, error) {
 		videos, err := f.repo.ListByFollowing(ctx, limit, viewerAccountID, latestBefore)
 		if err != nil {
-			return ListByFollowingResponse{}, err
+			return ListByFollowingResponse{}, followingFeedCache{}, err
 		}
 		var nextTime int64
 		if len(videos) > 0 {
@@ -364,14 +376,14 @@ func (f *FeedService) ListByFollowing(ctx context.Context, limit int, latestBefo
 		hasMore := len(videos) == limit
 		feedVideos, err := f.buildFeedVideos(ctx, videos, viewerAccountID)
 		if err != nil {
-			return ListByFollowingResponse{}, err
+			return ListByFollowingResponse{}, followingFeedCache{}, err
 		}
 		resp := ListByFollowingResponse{
 			VideoList: feedVideos,
 			NextTime:  nextTime,
 			HasMore:   hasMore,
 		}
-		return resp, nil
+		return resp, newFollowingFeedCache(videos, nextTime, hasMore), nil
 	}
 	var cacheKey string
 	if viewerAccountID != 0 && f.rediscache != nil {
@@ -379,63 +391,113 @@ func (f *FeedService) ListByFollowing(ctx context.Context, limit int, latestBefo
 		if !latestBefore.IsZero() {
 			before = latestBefore.Unix()
 		}
-		cacheKey = f.rediscache.Key("feed:listByFollowing:limit=%d:accountID=%d:before=%d", limit, viewerAccountID, before)
-		cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-		defer cancel()
+		cacheKey = f.rediscache.Key("feed:listByFollowing:v2:limit=%d:accountID=%d:before=%d", limit, viewerAccountID, before)
 
-		b, err := f.rediscache.GetBytes(cacheCtx, cacheKey)
-		if err == nil {
-			var cached ListByFollowingResponse
-			if err := json.Unmarshal(b, &cached); err == nil {
-				return cached, nil
+		if resp, ok, err := f.getCachedFollowingFeed(ctx, cacheKey, viewerAccountID); ok || err != nil {
+			return resp, err
+		}
+
+		lockKey := "lock:" + cacheKey
+		lockCtx, lockCancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		token, locked, _ := f.rediscache.Lock(lockCtx, lockKey, 500*time.Millisecond)
+		lockCancel()
+		if locked {
+			defer func() { _ = f.rediscache.Unlock(context.Background(), lockKey, token) }()
+			if resp, ok, err := f.getCachedFollowingFeed(ctx, cacheKey, viewerAccountID); ok || err != nil {
+				return resp, err
 			}
-		} else if rediscache.IsMiss(err) { // 缓存未命中
-			lockKey := "lock:" + cacheKey
-			// 缓存未命中，尝试加锁
-			token, locked, _ := f.rediscache.Lock(cacheCtx, lockKey, 500*time.Millisecond)
-			if locked {
-				defer func() { _ = f.rediscache.Unlock(context.Background(), lockKey, token) }()
-				if b, err := f.rediscache.GetBytes(cacheCtx, cacheKey); err == nil {
-					var cached ListByFollowingResponse
-					if err := json.Unmarshal(b, &cached); err == nil {
-						return cached, nil
-					}
-				} else { // 缓存未命中，从数据库中查询
-					resp, err := doListByFollowingFromDB()
-					if err != nil {
-						return ListByFollowingResponse{}, err
-					}
-					if b, err := json.Marshal(resp); err == nil {
-						_ = f.rediscache.SetBytes(cacheCtx, cacheKey, b, f.cacheTTL)
-					}
-					return resp, nil
-				}
-			} else {
-				for i := 0; i < 5; i++ {
-					time.Sleep(20 * time.Millisecond)
-					if b, err := f.rediscache.GetBytes(cacheCtx, cacheKey); err == nil {
-						var cached ListByFollowingResponse
-						if err := json.Unmarshal(b, &cached); err == nil {
-							return cached, nil
-						}
-					}
-				}
+			resp, cached, err := doListByFollowingFromDB()
+			if err != nil {
+				return ListByFollowingResponse{}, err
+			}
+			f.setCachedFollowingFeed(ctx, cacheKey, cached)
+			return resp, nil
+		}
+
+		for i := 0; i < 5; i++ {
+			time.Sleep(20 * time.Millisecond)
+			if resp, ok, err := f.getCachedFollowingFeed(ctx, cacheKey, viewerAccountID); ok || err != nil {
+				return resp, err
 			}
 		}
 	}
 
-	resp, err := doListByFollowingFromDB()
+	resp, cached, err := doListByFollowingFromDB()
 	if err != nil {
 		return ListByFollowingResponse{}, err
 	}
 	if cacheKey != "" {
-		if b, err := json.Marshal(resp); err == nil {
-			cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-			defer cancel()
-			_ = f.rediscache.SetBytes(cacheCtx, cacheKey, b, f.cacheTTL)
-		}
+		f.setCachedFollowingFeed(ctx, cacheKey, cached)
 	}
 	return resp, nil
+}
+
+func newFollowingFeedCache(videos []*video.Video, nextTime int64, hasMore bool) followingFeedCache {
+	cached := followingFeedCache{
+		Version:  followingFeedCacheVersion,
+		VideoIDs: make([]uint, 0, len(videos)),
+		NextTime: nextTime,
+		HasMore:  hasMore,
+	}
+	for _, v := range videos {
+		if v != nil {
+			cached.VideoIDs = append(cached.VideoIDs, v.ID)
+		}
+	}
+	return cached
+}
+
+func (f *FeedService) getCachedFollowingFeed(ctx context.Context, cacheKey string, viewerAccountID uint) (ListByFollowingResponse, bool, error) {
+	cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	b, err := f.rediscache.GetBytes(cacheCtx, cacheKey)
+	cancel()
+	if err != nil {
+		if rediscache.IsMiss(err) {
+			return ListByFollowingResponse{}, false, nil
+		}
+		log.Printf("read following feed cache failed: key=%s err=%v", cacheKey, err)
+		return ListByFollowingResponse{}, false, nil
+	}
+
+	var cached followingFeedCache
+	if err := json.Unmarshal(b, &cached); err != nil || cached.Version != followingFeedCacheVersion {
+		_ = f.rediscache.Del(context.Background(), cacheKey)
+		return ListByFollowingResponse{}, false, nil
+	}
+
+	if len(cached.VideoIDs) == 0 {
+		return ListByFollowingResponse{
+			VideoList: []FeedVideoItem{},
+			NextTime:  cached.NextTime,
+			HasMore:   cached.HasMore,
+		}, true, nil
+	}
+
+	videos, err := f.GetVideoByIDs(ctx, cached.VideoIDs)
+	if err != nil {
+		return ListByFollowingResponse{}, false, err
+	}
+	feedVideos, err := f.buildFeedVideos(ctx, videos, viewerAccountID)
+	if err != nil {
+		return ListByFollowingResponse{}, false, err
+	}
+	return ListByFollowingResponse{
+		VideoList: feedVideos,
+		NextTime:  cached.NextTime,
+		HasMore:   cached.HasMore,
+	}, true, nil
+}
+
+func (f *FeedService) setCachedFollowingFeed(ctx context.Context, cacheKey string, cached followingFeedCache) {
+	b, err := json.Marshal(cached)
+	if err != nil {
+		return
+	}
+	cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if err := f.rediscache.SetBytes(cacheCtx, cacheKey, b, f.cacheTTL); err != nil {
+		log.Printf("write following feed cache failed: key=%s err=%v", cacheKey, err)
+	}
 }
 
 func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf int64, offset int, viewerAccountID uint, latestPopularity int64, latestBefore time.Time, latestIDBefore uint) (ListByPopularityResponse, error) {
