@@ -144,8 +144,8 @@ async function logout() {
 
         <form class="mx-auto flex w-full max-w-xl items-center gap-2" @submit.prevent="onSearch">
           <div class="relative flex-1">
-            <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input v-model="search" class="pl-9" placeholder="搜索标题或作者" />
+            <Search class="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input v-model="search" class="pl-11" placeholder="搜索标题或作者" />
           </div>
           <Button variant="secondary" type="submit">搜索</Button>
         </form>
