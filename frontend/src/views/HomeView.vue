@@ -54,6 +54,20 @@ const visibleRange = computed(() => ({
 }))
 const myAccountId = computed(() => auth.claims?.account_id ?? 0)
 
+function shouldAttachVideoSource(index: number) {
+  return index === activeIndex.value || index === activeIndex.value + 1
+}
+
+function videoSource(item: FeedVideoItem, index: number) {
+  return shouldAttachVideoSource(index) ? item.play_url : undefined
+}
+
+function videoPreload(index: number) {
+  if (index === activeIndex.value) return 'auto'
+  if (index === activeIndex.value + 1) return 'metadata'
+  return 'none'
+}
+
 function animateActiveMeta() {
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !root.value) return
   const elements = root.value.querySelectorAll('.feed-slide.active [data-feed-reveal]')
@@ -181,20 +195,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           没有匹配内容
         </div>
 
+        <template v-for="(item, index) in filteredItems" :key="`${tab}-${item.id}`">
         <section
-          v-for="(item, index) in filteredItems"
-          v-show="index >= visibleRange.start && index <= visibleRange.end"
-          :key="`${tab}-${item.id}`"
+          v-if="index >= visibleRange.start && index <= visibleRange.end"
           class="feed-slide relative h-full snap-start overflow-hidden"
           :class="{ active: index === activeIndex }"
         >
           <video
             :ref="(element) => setVideoRef(item.id, element as HTMLVideoElement | null)"
             class="absolute inset-0 size-full bg-black object-contain"
-            :src="item.play_url"
+            :src="videoSource(item, index)"
             :poster="item.cover_url"
             playsinline
-            preload="metadata"
+            :preload="videoPreload(index)"
             loop
             @click="togglePlayPause(item.id)"
             @dblclick.prevent="toggleLike(item)"
@@ -250,6 +263,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             </div>
           </div>
         </section>
+        </template>
       </div>
 
       <CommentDrawer v-if="drawerOpen" :video="drawerVideo" @close="closeDrawer" />
