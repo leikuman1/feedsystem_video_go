@@ -48,10 +48,6 @@ const filteredItems = computed(() => {
   ))
 })
 const activeItem = computed(() => filteredItems.value[activeIndex.value] ?? null)
-const visibleRange = computed(() => ({
-  start: Math.max(0, activeIndex.value - 1),
-  end: Math.min(filteredItems.value.length - 1, activeIndex.value + 1),
-}))
 const myAccountId = computed(() => auth.claims?.account_id ?? 0)
 
 function videoSource(item: FeedVideoItem, index: number) {
@@ -185,9 +181,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           没有匹配内容
         </div>
 
-        <template v-for="(item, index) in filteredItems" :key="`${tab}-${item.id}`">
         <section
-          v-if="index >= visibleRange.start && index <= visibleRange.end"
+          v-for="(item, index) in filteredItems"
+          :key="`${tab}-${item.id}`"
           class="feed-slide relative h-full snap-start overflow-hidden"
           :class="{ active: index === activeIndex }"
         >
@@ -253,7 +249,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             </div>
           </div>
         </section>
-        </template>
       </div>
 
       <CommentDrawer v-if="drawerOpen" :video="drawerVideo" @close="closeDrawer" />
