@@ -54,18 +54,8 @@ const visibleRange = computed(() => ({
 }))
 const myAccountId = computed(() => auth.claims?.account_id ?? 0)
 
-function shouldAttachVideoSource(index: number) {
-  return index === activeIndex.value || index === activeIndex.value + 1
-}
-
 function videoSource(item: FeedVideoItem, index: number) {
-  return shouldAttachVideoSource(index) ? item.play_url : undefined
-}
-
-function videoPreload(index: number) {
-  if (index === activeIndex.value) return 'auto'
-  if (index === activeIndex.value + 1) return 'metadata'
-  return 'none'
+  return index === activeIndex.value ? item.play_url : undefined
 }
 
 function animateActiveMeta() {
@@ -207,7 +197,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             :src="videoSource(item, index)"
             :poster="item.cover_url"
             playsinline
-            :preload="videoPreload(index)"
+            preload="none"
             loop
             @click="togglePlayPause(item.id)"
             @dblclick.prevent="toggleLike(item)"
